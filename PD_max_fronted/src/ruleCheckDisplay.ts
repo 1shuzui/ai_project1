@@ -323,7 +323,7 @@ export function buildRuleCheckUserView(
 
   const highCompressionNote = data.pixel_overlap
     ? (data.pixel_overlap as Record<string, unknown>).high_compression === true
-      ? '⚠ 该图片压缩率较高，像素检测结果可能误报，请结合其他维度综合判断'
+      ? '该图片压缩率较高，像素检测结果可能误报，请结合其他维度综合判断'
       : undefined
     : undefined
 

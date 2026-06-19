@@ -58,7 +58,7 @@ test('新格式：不传 bbox → pixel_overlap=null + suggested_rois 有值 + p
       suggested_rois: [
         { bbox: [360, 202, 480, 228], label: '转账金额', category: '金额', priority: 1, source: 'ocr_labeled_field' },
         { bbox: [298, 130, 430, 160], label: '- 6,000.00', category: '金额候选', priority: 6, source: 'amount_line' },
-        { bbox: [100, 300, 250, 330], label: '6222****1234', category: '账号', priority: 2, source: 'ocr_labeled_field' },
+        { bbox: [100, 300, 250, 330], label: '张三', category: '姓名', priority: 2, source: 'ocr_labeled_field' },
       ],
       timestamp: {
         passed: true,
@@ -200,7 +200,7 @@ test('buildRuleCheckUserView：suggested_rois 存在 + pixel_overlap 为 null �
     pixel_overlap_source: null,
     suggested_rois: [
       { bbox: [360, 202, 480, 228], label: '转账金额', category: '金额', priority: 1, source: 'ocr_labeled_field' },
-      { bbox: [100, 300, 250, 330], label: '6222****1234', category: '账号', priority: 2, source: 'ocr_labeled_field' },
+      { bbox: [100, 300, 250, 330], label: '张三', category: '姓名', priority: 2, source: 'ocr_labeled_field' },
     ],
     timestamp: {
       passed: true,

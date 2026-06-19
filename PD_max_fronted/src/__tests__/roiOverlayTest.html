@@ -80,9 +80,9 @@
     <div class="card">
       <h2>建议检测区域</h2>
       <p class="hint">系统识别到以下可能被修改的区域，勾选或在图片上点击框线即可选中。</p>
-      <p id="lowConfWarning" class="warning" style="display:none;">⚠ 当前所有区域均为自动检测（准确度较低），建议人工判断后再勾选。</p>
+      <p id="lowConfWarning" class="warning" style="display:none;">当前所有区域均为自动检测（准确度较低），建议人工判断后再勾选。</p>
       <p class="legend-note">
-        <strong>金额候选</strong>：OCR 自动发现"含数字行"，未匹配到标签（金额/账号/时间/单号/姓名）。<strong>P6</strong>：优先级 6（最低），1=金额 2=账号 3=时间 4=单号 5=姓名/昵称 6=金额候选（兜底）。
+        <strong>金额候选</strong>：OCR 自动发现具备金额证据的文本，未匹配到明确字段标签。<strong>P6</strong>：优先级 6（最低），1=金额 2=姓名 3=时间 6=金额候选。
       </p>
       <div class="toolbar">
         <button id="btnSelectAll">全选</button>
