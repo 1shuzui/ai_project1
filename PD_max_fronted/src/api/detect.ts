@@ -233,7 +233,7 @@ function allocateNonOverlappingRegionBoxes(
 }
 
 /**
- * 优先覆盖「数字」：顶部大号 ¥ 金额（居中宽框）、清单里账号/时间（贴右缘窄条），
+ * 优先覆盖关键字段：顶部大号 ¥ 金额（居中宽框）、清单里姓名/时间（贴右缘窄条），
  * 避免落在标签与正文之间的空白带。
  */
 function allocateAmountFocusRegionBoxes(
@@ -265,7 +265,7 @@ function allocateAmountFocusRegionBoxes(
   }
 
   /**
-   * 清单行右侧数值列（账号、时间戳等），框偏窄并靠右，减少盖住中间留白。
+   * 清单行右侧关键字段值（姓名、时间戳等），框偏窄并靠右，减少盖住中间留白。
    * topRel/botRel：在图高中的纵向采样区间（0～1）
    */
   function pushRightDigitStrip(topRel: number, botRel: number) {
@@ -829,6 +829,9 @@ export interface V3ResultItem {
   bbox: BboxXYWH
   reason: string
   original_bbox?: BboxXYXY
+  region_no?: number | null
+  field_type?: 'amount' | 'name' | 'time' | 'manual' | string | null
+  field_label?: string | null
   source?: string | null
   text?: string | null
   flags?: string | null

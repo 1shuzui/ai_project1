@@ -1264,10 +1264,6 @@ type NumberedBbox = {
   bbox: readonly [number, number, number, number]
 }
 
-function bboxAreaWh(b: readonly [number, number, number, number]) {
-  return Math.max(0, b[2]) * Math.max(0, b[3])
-}
-
 /** 接口偶发缺 bbox 或非数组，直接解构会在 computed 里抛错导致整页白屏 */
 function readBboxWh(b: unknown): readonly [number, number, number, number] | null {
   if (!Array.isArray(b) || b.length < 4) return null
@@ -1278,6 +1274,22 @@ function readBboxWh(b: unknown): readonly [number, number, number, number] | nul
   return [x, y, w, h] as const
 }
 
+function resultRegionNo(item: V3ResultItem | null | undefined, fallback: number): number {
+  const raw = Number(item?.region_no)
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : fallback
+}
+
+function resultFieldLabel(item: V3ResultItem | null | undefined): string {
+  const label = String(item?.field_label ?? '').trim()
+  if (label) return label
+  const type = String(item?.field_type ?? '').trim()
+  if (type === 'amount') return '金额'
+  if (type === 'name') return '姓名'
+  if (type === 'time') return '时间'
+  if (type === 'manual') return '手动框选'
+  return '区域'
+}
+
 /** 与右侧列表序号一致；预览与历史坐标示意共用 */
 function collectNumberedBoxesFromPayload(
   p: NonNullable<typeof v3Payload.value>,
@@ -1286,25 +1298,19 @@ function collectNumberedBoxesFromPayload(
     const raw: NumberedBbox[] = []
     for (let i = 0; i < p.multi.length; i++) {
       const m = p.multi[i]
-      if ((m.result || '').trim() === '正常') continue
       const bb = readBboxWh(m?.bbox)
-      if (bb) raw.push({ n: i + 1, bbox: bb })
+      if (bb) raw.push({ n: resultRegionNo(m, i + 1), bbox: bb })
     }
-    if (raw.length) {
-      return [...raw].sort((a, b) => bboxAreaWh(a.bbox) - bboxAreaWh(b.bbox))
-    }
-    return []
+    return raw
   }
   if (p.result) {
-    const top = (p.result.result || '').trim()
-    if (top === '正常') return []
     const bb = readBboxWh(p.result.bbox)
-    if (bb) return [{ n: 1, bbox: bb }]
+    if (bb) return [{ n: resultRegionNo(p.result, 1), bbox: bb }]
   }
   return []
 }
 
-/** 与右侧「各区域明细」序号一致；按面积从小到大排序绘制，小框后画在上层，减轻遮挡 */
+/** 与右侧「各区域明细」序号一致 */
 const previewNumberedRegions = computed((): NumberedBbox[] => {
   if (!imageNatural.value.w || viewingHistoryId.value) return []
   const p = v3Payload.value
@@ -1383,15 +1389,14 @@ const vizHintMissing = computed(
     collectNumberedBoxesFromPayload(v3Payload.value).length > 0,
 )
 
-/** 检测报告「各区域明细」：不列出「正常」区域，仅展示可疑/篡改等需关注项，序号与全图检测一致 */
+/** 检测报告「各区域明细」：展示全部检测区，序号与后端标注图一致 */
 const reportMultiDetailRows = computed(() => {
   const multi = v3Payload.value?.multi
-  if (!multi?.length) return [] as { item: V3ResultItem; regionNo: number }[]
-  const out: { item: V3ResultItem; regionNo: number }[] = []
+  if (!multi?.length) return [] as { item: V3ResultItem; regionNo: number; fieldLabel: string }[]
+  const out: { item: V3ResultItem; regionNo: number; fieldLabel: string }[] = []
   for (let i = 0; i < multi.length; i++) {
     const m = multi[i]
-    if ((m.result || '').trim() === '正常') continue
-    out.push({ item: m, regionNo: i + 1 })
+    out.push({ item: m, regionNo: resultRegionNo(m, i + 1), fieldLabel: resultFieldLabel(m) })
   }
   return out
 })
@@ -1792,9 +1797,9 @@ function historyPillClass(entry: DetectionHistoryEntry) {
 
 function historyFeedbackStatusLabel(entry: DetectionHistoryEntry): string | null {
   const s = entry.feedbackStatus
-  if (s === 'correct') return '✓ 正确'
-  if (s === 'wrong') return '✗ 错误'
-  if (s === 'suspicious') return '⚠ 疑似'
+  if (s === 'correct') return '正确'
+  if (s === 'wrong') return '错误'
+  if (s === 'suspicious') return '疑似'
   return null
 }
 
@@ -2741,7 +2746,7 @@ onUnmounted(() => {
                 <ul class="multi-list">
                   <li v-for="row in reportMultiDetailRows" :key="row.regionNo">
                     <div class="multi-li-top">
-                      <span class="region-idx">{{ row.regionNo }}号</span>
+                      <span class="region-idx">{{ row.regionNo }}号 · {{ row.fieldLabel }}</span>
                       <span class="pill sm" :class="row.item.result || undefined">{{
                         row.item.result || '—'
                       }}</span>
@@ -2855,13 +2860,13 @@ onUnmounted(() => {
                 <p
                   v-if="suggestedRois.every(r => r.priority >= 5)"
                   class="suggested-rois-low-conf"
-                >⚠ 当前所有区域均为自动检测（准确度较低），建议人工判断后再勾选。</p>
+                >当前所有区域均为自动检测（准确度较低），建议人工判断后再勾选。</p>
                 <p
                   v-if="suggestedRois.length > 0"
                   class="suggested-rois-legend"
                 >
-                  <strong>金额候选</strong>：OCR 自动发现"含数字行"，未匹配到标签（金额/账号/时间/单号/姓名），准确度低于标签定位。
-                  <strong>P6</strong>：优先级 6（最低），1=金额 2=账号 3=时间 4=单号 5=姓名/昵称 6=金额候选（兜底）。
+                  <strong>关键区域</strong>：自动检测优先关注金额、姓名、时间三类字段。
+                  <strong>P6</strong>：低优先级金额候选，准确度低于明确字段标签定位。
                 </p>
                 <div class="suggested-rois-toolbar">
                   <button
