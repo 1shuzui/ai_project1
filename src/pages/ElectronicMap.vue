@@ -844,6 +844,37 @@
               <span class="emap-legend-stat-count">{{ row.count }}</span>
             </div>
           </div>
+          <div v-if="smelterTypeStats.length" class="emap-legend-stats">
+            <div class="emap-legend-stats-title">
+              冶炼厂类型数量
+              <span class="emap-legend-stats-total">（共 {{ allSmelterPoints.length }}）</span>
+            </div>
+            <div
+              v-for="row in smelterTypeStats"
+              :key="row.label"
+              class="emap-legend-stat-row"
+              :title="row.label"
+            >
+              <button
+                type="button"
+                class="emap-legend-eye-btn"
+                :title="hiddenSmelterTypes.has(row.label) ? '显示该类型' : '隐藏该类型'"
+                @click.stop="toggleSmelterTypeVisibility(row.label)"
+              >
+                <i
+                  class="bi"
+                  :class="hiddenSmelterTypes.has(row.label) ? 'bi-eye-slash' : 'bi-eye'"
+                  aria-hidden="true"
+                />
+              </button>
+              <span
+                class="emap-legend-stat-dot"
+                :style="{ background: row.color, boxShadow: `0 0 6px ${row.color}88` }"
+              />
+              <span class="emap-legend-stat-label">{{ row.label }}</span>
+              <span class="emap-legend-stat-count">{{ row.count }}</span>
+            </div>
+          </div>
         </div>
         <button
           type="button"
@@ -955,6 +986,7 @@ import {
   fetchTlSmeltersAll,
   fetchTlWarehouseLinksOutbound,
   fetchTlWarehouseTypes,
+  fetchTlFactoryTypes,
   fetchTlWarehousesAll,
   fetchTlRealtimeSpreadList,
   postTlGetComparison,
@@ -1049,6 +1081,7 @@ const GAODE_TILE =
   'https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}'
 
 const DEFAULT_WAREHOUSE_COLOR = '#2563eb'
+const DEFAULT_SMELTER_COLOR = '#f97316'
 const MAX_MAP_FLOW_TARGETS = 30
 /** 定位最近仓库提示在右上角停留时间 */
 const GEO_NEAREST_TOAST_MS = 10 * 60 * 1000
@@ -1571,12 +1604,38 @@ const warehouseTypeStats = computed((): WarehouseTypeStatRow[] => {
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
 })
 
+type SmelterTypeStatRow = { label: string; count: number; color: string }
+
+const smelterTypeStats = computed((): SmelterTypeStatRow[] => {
+  const by = new Map<string, { count: number; color: string }>()
+  for (const p of allSmelterPoints.value) {
+    const row = p.raw
+    const label =
+      pickStr(row, ['冶炼厂类型', 'factory_type', 'smelter_type', '冶炼厂类型名']).trim() || '未分类'
+    const color = p.pinColor ?? DEFAULT_SMELTER_COLOR
+    const cur = by.get(label)
+    if (!cur) by.set(label, { count: 1, color })
+    else cur.count += 1
+  }
+  return [...by.entries()]
+    .map(([label, { count, color }]) => ({ label, count, color }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
+})
+
 function toggleWarehouseTypeVisibility(label: string) {
   const s = new Set(hiddenWarehouseTypes.value)
   if (s.has(label)) s.delete(label)
   else s.add(label)
   hiddenWarehouseTypes.value = s
   applyWarehouseTypeVisibility()
+}
+
+function toggleSmelterTypeVisibility(label: string) {
+  const s = new Set(hiddenSmelterTypes.value)
+  if (s.has(label)) s.delete(label)
+  else s.add(label)
+  hiddenSmelterTypes.value = s
+  applySmelterVisibility()
 }
 
 function toggleAllWarehousesVisibility() {
@@ -1611,15 +1670,18 @@ function applyWarehouseTypeVisibility() {
 function applySmelterVisibility() {
   const markerLayer = markerLayerRef.value
   if (!markerLayer) return
+  const hidden = hiddenSmelterTypes.value
   for (const p of allSmelterPoints.value) {
     const m = smelterMarkerById.get(p.id)
     if (!m) continue
+    const typeName =
+      pickStr(p.raw, ['冶炼厂类型', 'factory_type', 'smelter_type', '冶炼厂类型名']).trim() || '未分类'
     const markerLatLng = m.getLatLng()
     const isOnMap = markerLatLng != null && mapRef.value?.hasLayer(m)
-    if (allSmeltersHidden.value) {
+    if (allSmeltersHidden.value || hidden.has(typeName)) {
       if (isOnMap) m.remove()
-    } else if (!isOnMap) {
-      m.addTo(markerLayer)
+    } else {
+      if (!isOnMap) m.addTo(markerLayer)
     }
   }
 }
@@ -1668,6 +1730,8 @@ function onEmapFullscreenChange() {
 const allSmelterPoints = ref<MapPoint[]>([])
 /** 隐藏的库房类型标签集合 */
 const hiddenWarehouseTypes = ref<Set<string>>(new Set())
+/** 隐藏的冶炼厂类型标签集合 */
+const hiddenSmelterTypes = ref<Set<string>>(new Set())
 /** 隐藏全部库房 / 冶炼厂打点 */
 const allWarehousesHidden = ref(false)
 const allSmeltersHidden = ref(false)
@@ -2148,6 +2212,23 @@ function buildTypeColorMap(types: Record<string, unknown>[]): Map<number, string
   return m
 }
 
+/** 冶炼厂类型颜色映射（类型 id → marker 颜色），与 buildTypeColorMap 同构但偏好的字段名不同 */
+function buildSmelterTypeColorMap(types: Record<string, unknown>[]): Map<number, string> {
+  const m = new Map<number, string>()
+  for (const t of types) {
+    const id = pickNumber(t, ['类型id', 'id', 'type_id', '类型ID'])
+    const rawColor = t['颜色配置']
+    let c = ''
+    if (rawColor != null && typeof rawColor === 'object' && !Array.isArray(rawColor)) {
+      c = String((rawColor as Record<string, unknown>).marker ?? '').trim()
+    }
+    if (!c) c = pickStr(t, ['颜色配置', 'color', '颜色', 'color_config'])
+    if (id == null || !c) continue
+    m.set(id, safeCssColor(c, DEFAULT_SMELTER_COLOR))
+  }
+  return m
+}
+
 /** 地图图钉颜色：与「库房类型维护」一致，按 类型id 使用 get_warehouse_types 中的颜色配置；无类型或接口未覆盖时再退回单条库房字段 */
 function resolveWarehousePinColor(
   row: Record<string, unknown>,
@@ -2176,6 +2257,32 @@ function resolveWarehousePinColor(
   const own = pickStr(row, ['仓库颜色配置', 'color', '颜色', 'color_config'])
   if (own) return safeCssColor(own, DEFAULT_WAREHOUSE_COLOR)
   return DEFAULT_WAREHOUSE_COLOR
+}
+
+/** 冶炼厂地图图钉颜色：按 冶炼厂类型id 使用 get_factory_types 中的颜色配置；无类型时退回默认橙色 */
+function resolveSmelterPinColor(
+  row: Record<string, unknown>,
+  smelterTypeColorById: Map<number, string>,
+): string {
+  const tid = pickNumber(row, [
+    '冶炼厂类型id',
+    'factory_type_id',
+    'smelter_type_id',
+    'type_id',
+    '类型id',
+  ])
+  if (tid != null && smelterTypeColorById.has(tid)) return smelterTypeColorById.get(tid)!
+
+  const colorConfig = row['冶炼厂颜色配置'] ?? row['颜色配置']
+  if (colorConfig != null && typeof colorConfig === 'object' && !Array.isArray(colorConfig)) {
+    const marker = (colorConfig as { marker?: unknown }).marker
+    if (marker != null && String(marker).trim() !== '') {
+      return safeCssColor(String(marker).trim(), DEFAULT_SMELTER_COLOR)
+    }
+  }
+  const own = pickStr(row, ['颜色配置', 'color', '颜色', 'color_config'])
+  if (own) return safeCssColor(own, DEFAULT_SMELTER_COLOR)
+  return DEFAULT_SMELTER_COLOR
 }
 
 /** 解析库房→冶炼厂运费列表（/tl/get_warehouses 字段「库房到冶炼厂运费」） */
@@ -2724,7 +2831,7 @@ function refreshAllMarkerVisualState() {
     else if (filterOn) {
       dimmed = !provincesRoughlyEqual(provinceFromRow(p.raw), emapProvinceFilter.value)
     }
-    m.setIcon(smelterIcon(dimmed, smelterComparisonTriLargeOn()))
+    m.setIcon(smelterIcon(dimmed, smelterComparisonTriLargeOn(), p.pinColor))
   }
 }
 
@@ -2819,15 +2926,16 @@ watch(emapProvinceFilter, () => {
   })()
 })
 
-function smelterIcon(dimmed = false, large = false): L.DivIcon {
+function smelterIcon(dimmed = false, large = false, color?: string): L.DivIcon {
   const baseTri = dimmed ? 'emap-smelter-tri emap-smelter-tri--dimmed' : 'emap-smelter-tri'
   const triCls = large ? `${baseTri} emap-smelter-tri--large` : baseTri
   const markerCls = large ? 'emap-marker emap-marker--smelter emap-marker--smelter-lg' : 'emap-marker emap-marker--smelter'
   const h = large ? 28 : 14
   const ax = large ? 16 : 8
+  const colorStyle = color ? `border-bottom-color:${safeCssColor(color, DEFAULT_SMELTER_COLOR)};` : ''
   return L.divIcon({
     className: markerCls,
-    html: `<div class="${triCls}" aria-hidden="true"></div>`,
+    html: `<div class="${triCls}" style="${colorStyle}" aria-hidden="true"></div>`,
     iconSize: large ? [32, 28] : [16, 14],
     iconAnchor: [ax, h],
     popupAnchor: [0, -h],
@@ -2856,7 +2964,7 @@ function renderMarkers(points: MapPoint[], options?: { preserveMapView?: boolean
     const icon =
       p.kind === 'warehouse'
         ? warehouseIcon(p.pinColor ?? DEFAULT_WAREHOUSE_COLOR, false)
-        : smelterIcon(false)
+        : smelterIcon(false, false, p.pinColor)
     const marker = L.marker([p.lat, p.lng], { icon })
     const popupHtml =
       p.kind === 'warehouse'
@@ -3611,10 +3719,10 @@ function formatValuePerTonCell(row: ComparisonRankItem): string {
 
 function comparisonXunRongBaoTitle(row: ComparisonRankItem): string {
   if (row.xunRongBaoExcludedPricing) {
-    return '本行为不含循融宝口径（来自接口「不含循融宝」对象）；运费与含循融宝行一致。'
+    return '不含循融宝口径；运费与含循融宝行一致。'
   }
   const n = row.xunRongBaoSurchargeYuanPerTon
-  const suffix = '列表金额与排序为含循融宝口径（与接口顶层字段一致）。'
+  const suffix = '列表金额与排序为含循融宝口径。'
   if (n != null && Number.isFinite(n)) {
     return `${n} 元/吨（在不含税基准上加价后重算含税列）；${suffix}`
   }
@@ -5156,13 +5264,7 @@ function openForecastAnalysisDrawer(row: ForecastDetailRow) {
     row.productVariety ? `品类：${row.productVariety}` : '',
     row.smelter ? `冶炼厂：${row.smelter}` : '',
   ].filter(Boolean)
-  const sections: Array<{ title: string; content: string }> = []
-  if (row.historyAnalysis) sections.push({ title: '历史发货规律分析', content: row.historyAnalysis })
-  if (row.priceSensitivityAnalysis) sections.push({ title: '价格敏感度分析', content: row.priceSensitivityAnalysis })
-  if (row.priceCompetitivenessAnalysis) sections.push({ title: '目标冶炼厂价格竞争力分析', content: row.priceCompetitivenessAnalysis })
-  if (row.holidayAnalysis) sections.push({ title: '节假日影响', content: row.holidayAnalysis })
-  if (row.weatherAnalysis) sections.push({ title: '天气物流影响', content: row.weatherAnalysis })
-  forecastAnalysisDrawerSections.value = sections
+  forecastAnalysisDrawerSections.value = []
   forecastAnalysisDrawerVisible.value = true
 }
 
@@ -5706,12 +5808,17 @@ async function loadAndPlot(ui: MarkersLoadUi = 'full') {
     // 先拉取收货价格日期缓存，确保后续渲染卡片时数据已就绪
     await refreshReceiptPriceDateCache()
     let typeRows: Record<string, unknown>[] = []
+    let factoryTypeRows: Record<string, unknown>[] = []
     try {
-      typeRows = await fetchTlWarehouseTypes(false)
+      ;[typeRows, factoryTypeRows] = await Promise.all([
+        fetchTlWarehouseTypes(false),
+        fetchTlFactoryTypes(false),
+      ])
     } catch {
-      /* 类型接口不可用时仍可按库房记录上的颜色字段配色 */
+      /* 类型接口不可用时仍可按单条记录上的颜色字段配色 */
     }
     const typeColorById = buildTypeColorMap(typeRows)
+    const smelterTypeColorById = buildSmelterTypeColorMap(factoryTypeRows)
 
     const points: MapPoint[] = []
 
@@ -5742,10 +5849,11 @@ async function loadAndPlot(ui: MarkersLoadUi = 'full') {
       const title = smelterLabel(row) || '冶炼厂'
       const id = smelterId(row)
       const subtitle = addressText(row).trim()
+      const pinColor = resolveSmelterPinColor(row, smelterTypeColorById)
       const coord = pickLatLng(row)
 
       if (coord) {
-        points.push({ kind: 'smelter', id, title, subtitle, lat: coord[0], lng: coord[1], raw: row })
+        points.push({ kind: 'smelter', id, title, subtitle, lat: coord[0], lng: coord[1], pinColor, raw: row })
       }
     }
 

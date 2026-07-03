@@ -18,6 +18,10 @@ export type DetectionHistoryEntry = {
   taskId: string
   fileName: string
   imageUrl: string
+  /** 图片创建时间（取自文件 lastModified），格式 "YYYY-MM-DD HH:MM:SS" */
+  imageCreatedAt?: string | null
+  /** 批次号，格式 YYYYMMDD+序号（如 202601021） */
+  batch?: string | null
   payload: HistoryPayload
   status: 'COMPLETED' | 'FAILED'
   mode?: string
@@ -137,6 +141,8 @@ export function mapApiRecordToEntry(r: DetectionHistoryApiRecord): DetectionHist
     taskId: (r.task_id ?? '').trim(),
     fileName: name || '未命名图片',
     imageUrl: (r.image_url ?? '').trim(),
+    imageCreatedAt: r.image_created_at ?? null,
+    batch: r.batch ?? null,
     payload,
     status: r.status?.toUpperCase() === 'FAILED' ? 'FAILED' : 'COMPLETED',
     mode: r.mode,

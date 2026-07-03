@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, toRaw } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRaw, watch } from 'vue'
 import {
   deleteDetectionHistory,
   downloadHistoryExportZip,
@@ -63,6 +63,12 @@ const uploadInputRef = ref<HTMLInputElement | null>(null)
 const historyPreviewUrl = ref<string | null>(null)
 const imgRef = ref<HTMLImageElement | null>(null)
 const imageNatural = ref({ w: 0, h: 0 })
+/** 当前选中文件的图片创建时间（从 lastModified 格式化） */
+const selectedFileImageCreatedAt = computed(() => {
+  const idx = selectedUploadIndex.value
+  if (idx < 0 || idx >= files.value.length) return ''
+  return formatImageCreatedAt(files.value[idx]!)
+})
 
 const v3SpecifyBbox = ref(false)
 /** 单据时间（可选）：付款截图等场景供后端时间校验 */
@@ -80,6 +86,8 @@ const userBbox = ref<BboxXYXY | null>(null)
 const busy = ref(false)
 const pollStatus = ref('')
 const errorMsg = ref<string | null>(null)
+/** 批次号：根据历史记录当天最大序号+1 生成；同批多张图共享 */
+const currentBatch = ref<string | null>(null)
 
 /** 当前检测任务的标注状态（correct / wrong / suspicious / null） */
 const currentTaskFeedbackStatus = ref<FeedbackJudgment | null>(null)
@@ -201,6 +209,8 @@ const managedHistoryActionBusy = ref<Record<string, boolean>>({})
 
 const exportDateFrom = ref('')
 const exportDateTo = ref('')
+/** 批次序号筛选（可选），仅填数字，日期取自上方检测时间起始日期 */
+const exportBatchSeq = ref('')
 const exportDetectionResults = ref<HistoryExportDetectionResult[]>([])
 const exportImageVariant = ref<HistoryExportImageVariant>('original')
 const exportPreviewLoading = ref(false)
@@ -210,7 +220,24 @@ const exportZipBusy = ref(false)
 /** 最近一次 ZIP 下载的服务端统计（响应头） */
 const exportDownloadHint = ref<string | null>(null)
 
+
 const viewingHistoryId = ref<string | null>(null)
+/** 当前正在查看的历史记录条目（点击历史列表时直接存入，不从数组查找） */
+const currentViewingEntry = ref<DetectionHistoryEntry | null>(null)
+const viewingHistoryEntry = computed(() => {
+  if (!viewingHistoryId.value) return currentViewingEntry.value
+  return (
+    currentViewingEntry.value ??
+    historyEntries.value.find((e) => e.id === viewingHistoryId.value) ??
+    managedHistoryRows.value.find((e) => e.id === viewingHistoryId.value) ??
+    null
+  )
+})
+/** viewingHistoryId 清空时同步清掉缓存的条目 */
+watch(viewingHistoryId, (id) => {
+  if (!id) currentViewingEntry.value = null
+})
+
 /** 同步检测进行中时用于取消 fetch */
 const detectAbort = ref<AbortController | null>(null)
 
@@ -396,12 +423,42 @@ async function checkHealth() {
   }
 }
 
-function detectSubmitOpts(signal: AbortSignal, withRuleChecks = false) {
+/** 将文件的 lastModified 格式化为 "YYYY-MM-DD HH:MM:SS" */
+function formatImageCreatedAt(file: File): string {
+  try {
+    const ts = file.lastModified
+    console.log('[image_created_at] file:', file.name, 'lastModified:', ts, '→', new Date(ts).toISOString())
+    const d = new Date(ts)
+    if (isNaN(d.getTime())) {
+      console.warn('[image_created_at] INVALID lastModified for:', file.name)
+      return ''
+    }
+    const pad = (n: number) => String(n).padStart(2, '0')
+    const result = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    console.log('[image_created_at] formatted:', result)
+    return result
+  } catch {
+    return ''
+  }
+}
+
+/** 格式化文件大小 */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function detectSubmitOpts(signal: AbortSignal, withRuleChecks = false, imageCreatedAt?: string | null) {
   const t = documentTime.value.trim()
+  const finalImageCreatedAt = imageCreatedAt || null
+  console.log('[detectSubmitOpts] image_created_at input:', JSON.stringify(imageCreatedAt), '→ output:', JSON.stringify(finalImageCreatedAt))
   return {
     signal,
     document_time: t || null,
     with_rule_checks: withRuleChecks,
+    image_created_at: finalImageCreatedAt,
+    batch: currentBatch.value || null,
   }
 }
 
@@ -739,17 +796,19 @@ async function removeManagedHistory(entry: DetectionHistoryEntry) {
 /** 默认与历史列表 retention 一致：最近 7 天 */
 function initExportDateDefault() {
   if (exportDateFrom.value && exportDateTo.value) return
+  const pad = (n: number) => String(n).padStart(2, '0')
   const now = new Date()
   const start = new Date(now)
   start.setDate(start.getDate() - 7)
-  exportDateFrom.value = start.toISOString().slice(0, 10)
-  exportDateTo.value = now.toISOString().slice(0, 10)
+  exportDateFrom.value = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}T00:00`
+  exportDateTo.value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T23:59`
 }
 
 function dateToExportDatetime(dateStr: string, endOfDay: boolean): string {
   const d = dateStr.trim()
   if (!d) return ''
-  return endOfDay ? `${d}T23:59:59` : `${d}T00:00:00`
+  if (d.includes('T')) return d
+  return endOfDay ? `${d}T23:59` : `${d}T00:00`
 }
 
 function buildHistoryExportRequest(): HistoryExportRequest {
@@ -762,6 +821,14 @@ function buildHistoryExportRequest(): HistoryExportRequest {
   }
   if (exportDetectionResults.value.length) {
     body.detection_results = [...exportDetectionResults.value]
+  }
+  const seq = exportBatchSeq.value.trim()
+  if (seq && /^\d+$/.test(seq)) {
+    const d = exportDateFrom.value.trim()
+    const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (m) {
+      body.batch = `${m[1]}${m[2]}${m[3]}${seq}`
+    }
   }
   return body
 }
@@ -897,6 +964,7 @@ async function startRuleChecks(
   bbox: BboxXYXY | null,
   signal: AbortSignal,
   taskId?: string | null,
+  imageCreatedAt?: string | null,
 ): Promise<RuleChecksData> {
   ruleCheckLoading.value = true
   ruleCheckError.value = null
@@ -906,7 +974,7 @@ async function startRuleChecks(
   const t0 = performance.now()
   try {
     const data = await submitRuleChecks(file, bbox, {
-      ...detectSubmitOpts(signal),
+      ...detectSubmitOpts(signal, false, imageCreatedAt ?? formatImageCreatedAt(file)),
       task_id: taskId,
     })
     ruleCheckPayload.value = data
@@ -946,6 +1014,7 @@ async function runRuleSingle(file: File) {
 
   busy.value = true
   errorMsg.value = null
+  currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
   v3TaskId.value = null
@@ -993,7 +1062,7 @@ async function runRoiDetect(file: File) {
   const t0 = performance.now()
   try {
     const data = await submitRuleChecks(file, selectedRoi.bbox as BboxXYXY, {
-      ...detectSubmitOpts(new AbortController().signal),
+      ...detectSubmitOpts(new AbortController().signal, false, formatImageCreatedAt(file)),
     })
     ruleCheckPayload.value = data
     ruleCheckElapsed.value = Math.round(performance.now() - t0)
@@ -1020,6 +1089,7 @@ async function runRuleBatch(batchFiles: File[]) {
 
   busy.value = true
   errorMsg.value = null
+  currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
   v3TaskId.value = null
@@ -1070,11 +1140,12 @@ async function runV3AsyncOne(
   progressPrefix: string,
   signal: AbortSignal,
   withRuleChecks = false,
+  imageCreatedAt?: string | null,
 ): Promise<{ taskId: string; payload: V3ViewPayload }> {
   pollStatus.value = withRuleChecks
     ? `${progressPrefix}：提交检测与辅助核查…`
     : `${progressPrefix}：提交任务…`
-  const submit = await submitV3Detect(file, bbox, detectSubmitOpts(signal, withRuleChecks))
+  const submit = await submitV3Detect(file, bbox, detectSubmitOpts(signal, withRuleChecks, imageCreatedAt ?? formatImageCreatedAt(file)))
   const taskId = submit.task_id?.trim()
   if (!taskId) throw new Error(`${progressPrefix}：未返回任务 ID`)
   pollStatus.value = withRuleChecks
@@ -1390,15 +1461,35 @@ const previewLightboxSrc = ref('')
 const previewLightboxStageRef = ref<HTMLElement | null>(null)
 const lightboxImgRef = ref<HTMLImageElement | null>(null)
 const lightboxImgNatural = ref({ w: 0, h: 0 })
+const lightboxScale = ref(1)
+const LIGHTBOX_SCALE_MIN = 0.25
+const LIGHTBOX_SCALE_MAX = 5
+const LIGHTBOX_SCALE_STEP = 0.25
+
+function computeFitScale(): number {
+  const imgW = lightboxImgNatural.value.w
+  const imgH = lightboxImgNatural.value.h
+  if (!imgW || !imgH) return 1
+  const stage = previewLightboxStageRef.value
+  const stageW = stage?.clientWidth ?? window.innerWidth
+  const stageH = stage?.clientHeight ?? window.innerHeight
+  const padW = Math.max(0, stageW - 32)
+  const padH = Math.max(0, stageH - 32)
+  // 允许放大（最大3倍），小图也能填满视口
+  return Math.min(3, padW / imgW, padH / imgH)
+}
 
 function openPreviewLightbox(src?: string) {
   const target = (src ?? activePreviewUrl.value ?? '').trim()
   if (!target) return
   previewLightboxSrc.value = target
   previewLightboxOpen.value = true
+  // 默认适应屏幕；图片加载后会触发 onLightboxImgLoad 重新计算
+  lightboxScale.value = computeFitScale()
   // 若与当前预览图片同源，直接复用已知尺寸
   if (target === activePreviewUrl.value && imageNatural.value.w > 0) {
     lightboxImgNatural.value = { w: imageNatural.value.w, h: imageNatural.value.h }
+    lightboxScale.value = computeFitScale()
   } else {
     lightboxImgNatural.value = { w: 0, h: 0 }
   }
@@ -1408,6 +1499,7 @@ function openPreviewLightbox(src?: string) {
     if (!stage) return
     stage.scrollTop = 0
     stage.scrollLeft = 0
+    stage.addEventListener('wheel', onLightboxWheel, { passive: false })
   })
 }
 
@@ -1415,7 +1507,10 @@ function closePreviewLightbox() {
   previewLightboxOpen.value = false
   previewLightboxSrc.value = ''
   lightboxImgNatural.value = { w: 0, h: 0 }
+  lightboxScale.value = 1
   window.removeEventListener('keydown', onPreviewLightboxKeydown)
+  const stage = previewLightboxStageRef.value
+  if (stage) stage.removeEventListener('wheel', onLightboxWheel)
 }
 
 function onLightboxImgLoad() {
@@ -1423,10 +1518,28 @@ function onLightboxImgLoad() {
   lightboxImgNatural.value = el
     ? { w: el.naturalWidth, h: el.naturalHeight }
     : { w: 0, h: 0 }
+  // 图片加载后自动计算适应屏幕的缩放
+  nextTick(() => { lightboxScale.value = computeFitScale() })
 }
 
 function onPreviewLightboxKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') closePreviewLightbox()
+}
+
+function onLightboxWheel(e: WheelEvent) {
+  if (!e.ctrlKey && !e.metaKey) return
+  e.preventDefault()
+  const delta = -Math.sign(e.deltaY) * LIGHTBOX_SCALE_STEP
+  lightboxScale.value = Math.min(LIGHTBOX_SCALE_MAX, Math.max(LIGHTBOX_SCALE_MIN, lightboxScale.value + delta))
+}
+
+function onLightboxImgClick() {
+  const fitScale = computeFitScale()
+  if (Math.abs(lightboxScale.value - fitScale) < 0.01) {
+    lightboxScale.value = Math.min(LIGHTBOX_SCALE_MAX, fitScale * 2)
+  } else {
+    lightboxScale.value = fitScale
+  }
 }
 
 function onPreviewImgClick() {
@@ -1606,6 +1719,34 @@ function truncateName(name: string, max = 18) {
   return `${name.slice(0, max - 1)}…`
 }
 
+/** 从批次号（格式 YYYYMMDD+序号，如 202601021）中提取序号部分 */
+function formatBatchShort(batch: string | null | undefined): string {
+  if (!batch || batch.length <= 8) return batch || '—'
+  return batch.slice(8)
+}
+
+/** 从历史记录中推断下一个批次号：当天日期 + 最大序号 + 1，无当天记录则从 1 开始 */
+function generateNextBatch(): string {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const datePrefix = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+  let maxSeq = 0
+  // 从已加载的历史列表中查找当天批次的最大序号
+  for (const e of historyEntries.value) {
+    const b = e.batch
+    if (b && b.startsWith(datePrefix)) {
+      const seq = parseInt(b.slice(8), 10)
+      if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq
+    }
+  }
+  // 如果当前会话已有批次号，也纳入比较（避免重复）
+  if (currentBatch.value && currentBatch.value.startsWith(datePrefix)) {
+    const seq = parseInt(currentBatch.value.slice(8), 10)
+    if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq
+  }
+  return `${datePrefix}${maxSeq + 1}`
+}
+
 /** 切换 suggested_rois 列表中某个 ROI 的勾选状态 */
 function toggleRoiIndex(idx: number) {
   const arr = selectedRoiIndices.value
@@ -1772,6 +1913,7 @@ async function applyHistoryEntry(entry: DetectionHistoryEntry) {
   errorMsg.value = null
   pollStatus.value = ''
   viewingHistoryId.value = entry.id
+  currentViewingEntry.value = entry
   imageNatural.value = { w: 0, h: 0 }
   ruleCheckPayload.value = entry.ruleCheck ?? null
   ruleCheckError.value = null
@@ -1921,7 +2063,7 @@ async function runV3() {
     resetRuleCheck()
     try {
       pollStatus.value = '正在提交检测…'
-      const data = await submitV1ImageDetectSync(one, bbox, detectSubmitOpts(ac.signal))
+      const data = await submitV1ImageDetectSync(one, bbox, detectSubmitOpts(ac.signal, false, formatImageCreatedAt(one)))
       if (data.error_msg?.trim() && !data.result && !(data.multi?.length)) {
         throw new Error(data.error_msg)
       }
@@ -1965,6 +2107,7 @@ async function runV3() {
 
   busy.value = true
   errorMsg.value = null
+  currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
   v3TaskId.value = null
@@ -2015,12 +2158,13 @@ async function runV3() {
 async function runV3Batch(files: File[]) {
   if (!files.length) return
   if (v3SpecifyBbox.value) {
-    errorMsg.value = '批量检测暂不支持“仅分析框选区域”，请关闭后重试。'
+    errorMsg.value = '批量检测暂不支持”仅分析框选区域”，请关闭后重试。'
     return
   }
   const runRule = useRuleDetection.value
   busy.value = true
   errorMsg.value = null
+  currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
   v3TaskId.value = null
@@ -2370,7 +2514,7 @@ onUnmounted(() => {
           >
             <img
               ref="imgRef"
-              :src="activePreviewUrl"
+              :src="activePreviewUrl || undefined"
               alt="待检测图片"
               class="preview-img"
               :class="{ 'preview-img-zoomin': !v3SpecifyBbox && !busy }"
@@ -2496,6 +2640,17 @@ onUnmounted(() => {
             />
           </div>
 
+          <div v-if="files.length" class="preview-file-info">
+            <div class="preview-file-name" :title="files[selectedUploadIndex]?.name">
+              📄 {{ files[selectedUploadIndex]?.name || '-' }}
+            </div>
+            <div class="preview-file-meta-row">
+              <span>{{ files[selectedUploadIndex] ? formatFileSize(files[selectedUploadIndex]!.size) : '-' }}</span>
+              <span class="preview-file-info-sep">·</span>
+              <span>{{ selectedFileImageCreatedAt || '-' }}</span>
+            </div>
+          </div>
+
           <div v-else class="empty-preview">
             <p>请先在左侧上传一张图片</p>
             <p v-if="viewingHistoryId" class="history-preview-hint">
@@ -2512,6 +2667,13 @@ onUnmounted(() => {
                 >历史记录</span
               >
             </div>
+          </div>
+
+          <div v-if="viewingHistoryEntry" class="history-file-meta">
+            <div class="history-file-name" :title="viewingHistoryEntry.fileName"
+              >📄 {{ viewingHistoryEntry.fileName }}</div
+            >
+            <div class="history-file-time">{{ viewingHistoryEntry.imageCreatedAt || '—' }}</div>
           </div>
 
           <div v-if="hasAiReport" class="report">
@@ -2801,7 +2963,7 @@ onUnmounted(() => {
             >
               <p class="history-schematic-title">区域位置示意</p>
               <p class="history-schematic-note">
-                服务端未保留原图或标注图时，仅根据检测坐标绘制框线（与接口像素坐标一致，非真实底图）。
+                服务端未保留原图或标注图，仅根据检测坐标绘制示意框线。
               </p>
               <svg
                 class="history-schematic-svg"
@@ -2900,6 +3062,8 @@ onUnmounted(() => {
                 <span class="history-file" :title="h.fileName">{{
                   truncateName(h.fileName)
                 }}</span>
+                <span class="history-file-time">{{ h.imageCreatedAt || '—' }}</span>
+                <span v-if="h.batch" class="history-batch">批次：{{ formatBatchShort(h.batch) }}</span>
                 <span class="pill sm history-pill" :class="historyPillClass(h)">{{
                   historyResultLabel(h)
                 }}</span>
@@ -3260,23 +3424,36 @@ onUnmounted(() => {
             <h3 class="section-title tight">鉴伪历史导出</h3>
           </div>
           <p class="export-hint">
-            按时间范围筛选鉴伪历史，先预览统计再打包下载 ZIP（含 manifest 与图片）。默认日期为最近 7 天，与历史列表保留范围一致。
+            按时间范围筛选鉴伪历史，先预览统计再打包下载 ZIP（含 manifest 与图片）。默认日期为最近 7 天，精确到秒；可选批次号精确筛选。
           </p>
           <div class="manage-date-filter-wrap">
             <span class="filter-label">检测时间：</span>
           </div>
           <div class="manage-date-filter-controls">
             <input
-              type="date"
+              type="datetime-local"
               class="filter-date-input"
+              step="1"
               v-model="exportDateFrom"
             />
             <span class="filter-date-sep">~</span>
             <input
-              type="date"
+              type="datetime-local"
               class="filter-date-input"
+              step="1"
               v-model="exportDateTo"
             />
+          </div>
+          <div class="manage-filter-row export-filter-block">
+            <span class="filter-label">批次号：</span>
+            <input
+              type="text"
+              class="filter-batch-input"
+              v-model="exportBatchSeq"
+              inputmode="numeric"
+              placeholder="填写序号，如 1，留空表示全部"
+            />
+            <span class="export-filter-note">（日期取上方检测时间起始日）</span>
           </div>
           <div class="manage-filter-row export-filter-block">
             <span class="filter-label">鉴伪结论：</span>
@@ -3369,6 +3546,7 @@ onUnmounted(() => {
                     :class="item.feedback_status"
                   >{{ exportFeedbackStatusLabel(item.feedback_status) }}</span>
                   <span v-if="!item.has_image" class="history-kind">无图</span>
+                  <span v-if="item.batch" class="history-kind">批次：{{ formatBatchShort(item.batch) }}</span>
                   <span class="feedback-row-time">{{ formatHistoryTime(item.created_at) }}</span>
                 </span>
                 <span class="history-file" :title="item.original_filename || ''">{{
@@ -3422,6 +3600,8 @@ onUnmounted(() => {
                   >{{ historyFeedbackStatusLabel(entry) }}</span>
                 </span>
                 <span class="history-file">{{ entry.fileName }}</span>
+                <span class="history-file-time">{{ entry.imageCreatedAt || '—' }}</span>
+                <span v-if="entry.batch" class="history-batch">批次：{{ formatBatchShort(entry.batch) }}</span>
               </button>
               <button
                 type="button"
@@ -3454,6 +3634,8 @@ onUnmounted(() => {
               <div class="manage-detail-body">
                 <dl class="manage-facts">
                   <div><dt>文件</dt><dd>{{ selectedManagedHistory.fileName }}</dd></div>
+                  <div><dt>修改时间</dt><dd>{{ selectedManagedHistory.imageCreatedAt || '—' }}</dd></div>
+                  <div v-if="selectedManagedHistory.batch"><dt>批次</dt><dd>{{ formatBatchShort(selectedManagedHistory.batch) }}</dd></div>
                   <div><dt>任务</dt><dd>{{ selectedManagedHistory.taskId || '—' }}</dd></div>
                   <div><dt>结果</dt><dd>{{ historyResultLabel(selectedManagedHistory) }}</dd></div>
                   <div><dt>类型</dt><dd>{{ historyKindLabel(selectedManagedHistory) || '—' }}</dd></div>
@@ -3501,13 +3683,15 @@ onUnmounted(() => {
           ×
         </button>
         <div ref="previewLightboxStageRef" class="preview-lightbox-stage">
-          <div class="preview-lightbox-img-wrap">
+          <div class="preview-lightbox-img-wrap" :style="{ transform: `scale(${lightboxScale})` }">
             <img
               ref="lightboxImgRef"
               :src="previewLightboxSrc"
               alt=""
               class="preview-lightbox-img"
+              :class="{ 'preview-lightbox-img-zoomable': lightboxScale < LIGHTBOX_SCALE_MAX }"
               @load="onLightboxImgLoad"
+              @click.stop="onLightboxImgClick"
             />
             <svg
               v-if="lightboxImgNatural.w && suggestedRoiRenderRects.length"
@@ -3556,7 +3740,7 @@ onUnmounted(() => {
             </svg>
           </div>
         </div>
-        <p class="preview-lightbox-hint">点击背景或 × 关闭，按 Esc 退出</p>
+        <p class="preview-lightbox-hint">滚轮缩放 | 点击图片 适应/原始/2x 三档切换 | 点背景或 × 关闭 | Esc 退出</p>
       </div>
     </Teleport>
   </div>
@@ -3776,6 +3960,27 @@ onUnmounted(() => {
 .filter-date-input:focus {
   border-color: var(--brand);
   outline: none;
+}
+
+.filter-batch-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.35rem 0.55rem;
+  width: 100px;
+}
+
+.filter-batch-input:focus {
+  border-color: var(--brand);
+  outline: none;
+}
+
+.filter-batch-input::placeholder {
+  color: #94a3b8;
+  font-size: 0.7rem;
 }
 
 .filter-date-sep {
@@ -4230,10 +4435,6 @@ onUnmounted(() => {
   .history-aside .history-card {
     position: static;
   }
-
-  .history-list {
-    max-height: min(220px, 38vh);
-  }
 }
 
 @media (max-width: 960px) {
@@ -4536,6 +4737,60 @@ onUnmounted(() => {
   color: #1e40af;
 }
 
+.preview-file-info {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  padding: 0.3rem 0.15rem;
+}
+
+.preview-file-name {
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.preview-file-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.preview-file-info-sep {
+  color: #c0c4cc;
+  flex-shrink: 0;
+}
+
+.history-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.5rem 1rem;
+  margin: 0 1rem 0.5rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.history-file-name {
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+.history-file-time {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+
 .option-row {
   margin-top: 1rem;
 }
@@ -4736,17 +4991,12 @@ onUnmounted(() => {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: min(36vh, 280px);
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.2rem;
 }
 
 @media (min-width: 1181px) {
-  .history-aside .history-list {
-    max-height: calc(100vh - 11.5rem);
-  }
 }
 
 .history-row {
@@ -4755,7 +5005,6 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface-2);
-  overflow: hidden;
 }
 
 .history-row.active {
@@ -4771,10 +5020,10 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: flex-start;
   justify-content: center;
-  gap: 0.28rem;
-  padding: 0.52rem 0.5rem;
-  min-height: 86px;
-  line-height: 1.4;
+  gap: 0.12rem;
+  padding: 0.3rem 0.45rem;
+  min-height: 56px;
+  line-height: 1.35;
   text-align: left;
   border: none;
   background: transparent;
@@ -4907,6 +5156,24 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.history-file-time {
+  display: block;
+  font-size: 0.68rem;
+  color: #94a3b8;
+  line-height: 1.3;
+}
+
+.history-batch {
+  display: inline-block;
+  font-size: 0.68rem;
+  color: #6366f1;
+  background: #eef2ff;
+  border-radius: 4px;
+  padding: 1px 6px;
+  line-height: 1.4;
+  margin-right: 6px;
 }
 
 .history-pill {
@@ -5993,7 +6260,8 @@ onUnmounted(() => {
   position: relative;
   display: inline-block;
   line-height: 0;
-  min-width: 100%;
+  transform-origin: top left;
+  transition: transform 150ms ease-out;
 }
 
 .preview-lightbox-overlay {
@@ -6003,15 +6271,16 @@ onUnmounted(() => {
 }
 
 .preview-lightbox-img {
-  max-width: none;
-  max-height: none;
-  width: min(160vw, 1600px);
-  height: auto;
   display: block;
   margin: 0;
-  object-fit: contain;
+  width: auto;
+  height: auto;
   border-radius: 8px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+}
+
+.preview-lightbox-img-zoomable {
+  cursor: zoom-in;
 }
 
 .preview-lightbox-close {

@@ -449,7 +449,7 @@ interface ApiResponse {
 }
 
 // ==================== 状态 ====================
-const activeTab = ref('import')
+const activeTab = ref('list')
 const tableLoading = ref(false)
 const importLoading = ref(false)
 const fileInput = ref<HTMLInputElement>()
@@ -944,7 +944,18 @@ const fetchData = async () => {
   }
 }
 
+const validateDateRange = (): boolean => {
+  const start = filters.value.startDate
+  const end = filters.value.endDate
+  if (start && end && end < start) {
+    showError('日期范围错误', ['结束日期不能早于开始日期，请重新选择'])
+    return false
+  }
+  return true
+}
+
 const handleQuery = () => {
+  if (!validateDateRange()) return
   currentPage.value = 1
   fetchData()
 }

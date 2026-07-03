@@ -253,6 +253,38 @@ export async function fetchTlWarehouseTypes(includeInactive = false): Promise<Re
   return unwrapList(raw)
 }
 
+// ── 冶炼厂类型字典维护（与库房类型模式一致） ──
+
+/** 查询冶炼厂类型列表 GET /tl/get_factory_types */
+export async function fetchTlFactoryTypes(includeInactive = false): Promise<Record<string, unknown>[]> {
+  const q = includeInactive ? 'true' : 'false'
+  const raw = await tlGetJson(`/tl/get_factory_types?include_inactive=${q}`)
+  return unwrapList(raw)
+}
+
+/** 新增冶炼厂类型 POST /tl/add_factory_type */
+export async function addTlFactoryType(body: {
+  类型名: string
+  颜色配置?: { marker: string } | null
+}): Promise<unknown> {
+  return tlPostJson('/tl/add_factory_type', body as unknown as Record<string, unknown>)
+}
+
+/** 修改冶炼厂类型 POST /tl/update_factory_type */
+export async function updateTlFactoryType(body: {
+  类型id: number
+  类型名?: string
+  颜色配置?: { marker: string } | null
+  is_active?: boolean
+}): Promise<unknown> {
+  return tlPostJson('/tl/update_factory_type', body as unknown as Record<string, unknown>)
+}
+
+/** 删除冶炼厂类型（软删除） DELETE /tl/delete_factory_type?type_id=... */
+export async function deleteTlFactoryType(typeId: number): Promise<unknown> {
+  return tlDeleteJson(`/tl/delete_factory_type?type_id=${typeId}`)
+}
+
 /** `不含循融宝` / `含循融宝`：与明细顶层价税块同构；运费与顶层一致 */
 export type TlXunRongBaoPriceBranch = {
   单价: number | null

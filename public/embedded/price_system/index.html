@@ -1316,7 +1316,12 @@
             const isEditSmelterTitle =
               (/编辑|編輯/.test(title) || (hasSmelterForm && !isAddSmelterTitle)) && !isAddSmelterTitle
             const editing = isEditSmelterTitle && Number.isFinite(sidResolved) && sidResolved > 0
+            const typeSel = document.getElementById('smelter-type-select')
+            const typeId = Number(typeSel?.value || '')
+            const typeName = typeSel?.selectedOptions?.[0] ? String(typeSel.selectedOptions[0].textContent || '').replace(/^\[停用\]\s*/, '').trim() : ''
             const payload = { 冶炼厂名: name, 地址: address }
+            if (!isNaN(typeId) && typeId >= 1) payload['冶炼厂类型id'] = typeId
+            if (typeName) payload['冶炼厂类型名'] = typeName
             if (address) {
               const o = splitCnAddress(address)
               if (o.province) payload['省'] = o.province

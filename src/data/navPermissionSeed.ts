@@ -69,6 +69,7 @@ export const NAV_PERMISSION_SEED: NavPermissionSeedRow[] = [
   { category: 'ai_price', label: '冶炼厂管理', field_name: 'perm_nav_ai_price_smelter_manage' },
   { category: 'ai_price', label: '回收品类管理', field_name: 'perm_nav_ai_price_category_manage' },
   { category: 'ai_price', label: '库房类型配置', field_name: 'perm_nav_ai_price_warehouse_type_config' },
+  { category: 'ai_price', label: '冶炼厂类型配置', field_name: 'perm_nav_ai_price_factory_type_config' },
   { category: 'ai_price', label: '运费模板', field_name: 'perm_nav_ai_price_freight_template' },
   { category: 'ai_price', label: '税金/换算比例', field_name: 'perm_nav_ai_price_tax_rate_config' },
   { category: 'ai_price', label: '异常信息补全', field_name: 'perm_nav_ai_price_abnormal_complete' },

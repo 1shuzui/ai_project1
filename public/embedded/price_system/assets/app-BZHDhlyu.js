@@ -159,6 +159,13 @@ function wa(e) {
     var t = _(e, [`类型`, `类型名`, `warehouse_type_name`, `type_name`, `名称`], ``);
     return t == null || t === `` ? `-` : String(t)
 }
+function readSmTypeName(e) {
+    var t = _(e, [`冶炼厂类型`, `factory_type`, `冶炼厂类型名`, `factory_type_name`], ``);
+    return t == null || t === `` ? `-` : String(t)
+}
+function readSmTypeId(e) {
+    return v(e, [`冶炼厂类型id`, `factory_type_id`, `type_id`])
+}
 
 function xa(e) {
     var t = _(e, [`颜色配置`, `库房类型颜色配置`, `仓库颜色配置`, `color`, `颜色`, `color_config`], ``);
@@ -859,6 +866,10 @@ function Le() {
     let e = document.getElementById(`add-smelter-btn`);
     e && e.addEventListener(`click`, function() {
         U(`新增冶炼厂`, Ke(), {
+            onOpen: async function() {
+                var s = document.getElementById(`smelter-type-select`);
+                s && await ltFactoryTypes(s, null)
+            },
             onConfirm: function() {
                 return Qe(null)
             }
@@ -874,6 +885,10 @@ function Le() {
             n = t ? t.querySelector(`.edit-btn`) : null;
         n && n.click()
     }));
+    var i = document.getElementById(`smelter-types-modal-btn`);
+    i && i.addEventListener(`click`, function() {
+        vtOpenFactoryTypesModal()
+    });
     let n = document.getElementById(`smelter-search`);
     n && (n.addEventListener(`input`, function() {
         $(this.value)
@@ -1401,6 +1416,12 @@ function Ke() {
                 <input type="text" id="smelter-name" class="form-control" required>
             </div>
             <div class="form-group">
+                <label for="smelter-type-select">冶炼厂类型</label>
+                <select id="smelter-type-select" class="form-control">
+                    <option value="">不指定</option>
+                </select>
+            </div>
+            <div class="form-group">
                 <label for="smelter-address">地址</label>
                 <input type="text" id="smelter-address" class="form-control" placeholder="省市区街道门牌等（可选）">
             </div>
@@ -1612,9 +1633,14 @@ async function Qe(e) {
     if (!n) throw Error(`请填写冶炼厂名称`);
     let r = document.getElementById(`smelter-address`),
         i = r && r.value.trim(),
+        c = document.getElementById(`smelter-type-select`),
+        d = c ? parseInt(c.value, 10) : NaN,
+        u = c && c.selectedOptions && c.selectedOptions[0] ? String(c.selectedOptions[0].textContent || ``).replace(/^\[停用\]\s*/, ``).trim() : ``,
         a = {
             冶炼厂名: n
         };
+    if (!isNaN(d) && d >= 1) a.冶炼厂类型id = d;
+    if (u) a.冶炼厂类型名 = u;
     if (i) {
         a.地址 = i;
         var o = splitCnAddress(i);
@@ -1630,10 +1656,12 @@ function $e(e) {
         });
         if (!n) throw Error(`未找到该冶炼厂`);
         U(`编辑冶炼厂`, Ke(), {
-            onOpen: function() {
+            onOpen: async function() {
                 document.getElementById(`smelter-name`).value = C(n) || ``;
                 var t = document.getElementById(`smelter-address`);
-                t && (t.value = Aa(n) || ``)
+                t && (t.value = Aa(n) || ``);
+                var s = document.getElementById(`smelter-type-select`);
+                s && await ltFactoryTypes(s, v(n, [`冶炼厂类型id`, `factory_type_id`, `type_id`]))
             },
             onConfirm: function() {
                 return Qe(e)
@@ -2334,6 +2362,220 @@ async function ItType(e) {
         alert(`删除失败: ` + (e.message || String(e)))
     }
 }
+function vtOpenFactoryTypesModal() {
+    U(`冶炼厂类型维护`, UtFactoryModalBody(), {
+        onOpen: async function() {
+            var e = document.getElementById(`ft-modal-add-btn`);
+            e && (e.onclick = function(e) {
+                e.preventDefault(), e.stopPropagation(), U(`新增冶炼厂类型`, $eFactoryType(), {
+                    onOpen: function() {
+                        WtWireFactoryColorControls()
+                    },
+                    onConfirm: function() {
+                        return QtFactoryType(null)
+                    }
+                })
+            });
+            var t = document.getElementById(`factory-type-table-body`);
+            t && !t.dataset.ftDlg && (t.dataset.ftDlg = `1`, t.addEventListener(`click`, function(e) {
+                var n = e.target.closest(`.ft-edit-btn`),
+                    r = e.target.closest(`.ft-del-btn`);
+                n ? jtFactoryType(parseInt(n.getAttribute(`data-id`), 10)) : r && ItFactoryType(parseInt(r.getAttribute(`data-id`), 10))
+            })), await ptFactoryTypes()
+        },
+        onConfirm: function() {
+            return !0
+        }
+    })
+}
+
+function UtFactoryModalBody() {
+    return `
+        <div class="warehouse-types-modal-inner">
+            <button type="button" class="btn btn-primary btn-sm mb-2" id="ft-modal-add-btn"><i class="fas fa-plus"></i> 新增冶炼厂类型</button>
+            <p class="text-muted small mb-2">共 <span id="factory-type-count">0</span> 条</p>
+            <div class="table-responsive" style="max-height:380px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
+                <table class="data-table" style="width:100%;margin:0"><thead><tr><th>类型ID</th><th>类型名</th><th>颜色</th><th>状态</th><th>操作</th></tr></thead><tbody id="factory-type-table-body"></tbody></table>
+            </div>
+            <p class="text-muted small mb-0 mt-2">类型与颜色供冶炼厂列表展示；停用后新建冶炼厂不可选。点击下方「确认」关闭本窗口。</p>
+        </div>
+    `
+}
+
+function $eFactoryType() {
+    return `
+        <form id="factory-type-form">
+            <div class="form-group">
+                <label for="ft-type-name">类型名 <span class="required">*</span></label>
+                <input type="text" id="ft-type-name" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>颜色配置（可选）</label>
+                <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0">
+                    <span id="ft-color-preview" title="预览" style="display:inline-block;width:28px;height:28px;border-radius:6px;border:1px solid #cbd5e1;background:#e2e8f0"></span>
+                    <select id="ft-color-vivid" class="form-control" style="max-width:150px">
+                        <option value="">选色…</option>
+                        <option value="#dc2626">红</option>
+                        <option value="#ea580c">橙</option>
+                        <option value="#eab308">黄</option>
+                        <option value="#16a34a">绿</option>
+                        <option value="#0891b2">青</option>
+                        <option value="#2563eb">蓝</option>
+                        <option value="#7c3aed">紫</option>
+                        <option value="#6b7280">灰色</option>
+                        <option value="#ffffff">白</option>
+                        <option value="#000000">黑</option>
+                    </select>
+                </div>
+                <input type="text" id="ft-color" class="form-control" placeholder="#RRGGBB，或从上方下拉选色；留空为黑色">
+                <small class="form-text">不填时自动使用黑色 <code>#000000</code></small>
+            </div>
+        </form>
+    `
+}
+
+function WtWireFactoryColorControls() {
+    var e = document.getElementById(`ft-color-vivid`),
+        t = document.getElementById(`ft-color`),
+        n = document.getElementById(`ft-color-preview`);
+    WtEnsureVividGrayOption(e);
+    if (!t) return;
+    if (t.dataset.ftWired) return;
+    t.dataset.ftWired = `1`;
+    function r() {
+        var e = (t.value || ``).trim(),
+            i = WtSafeCssColor(e);
+        n && (n.style.cssText = `display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:` + (i || `#e2e8f0`))
+    }
+    function i() {
+        var n = (t.value || ``).trim();
+        if (e) {
+            var a = e.value;
+            if (a && n) {
+                var o = n.toLowerCase();
+                for (var s = 0; s < e.options.length; s++)
+                    if (String(e.options[s].value).toLowerCase() === o) {
+                        e.options[s].selected = !0;
+                        return
+                    }
+            }
+            if (a && !n) return
+        }
+    }
+    t.addEventListener(`input`, r), t.addEventListener(`change`, function() { r(), i() }), e && e.addEventListener(`change`, function() {
+        var n = e.value;
+        n && (t.value = n, r())
+    }), r(), i()
+}
+
+async function ptFactoryTypes() {
+    let e = document.getElementById(`factory-type-table-body`),
+        t = document.getElementById(`factory-type-count`);
+    if (!e) return;
+    E(e, 5, `正在加载冶炼厂类型...`);
+    try {
+        let n = await Api.request(`GET`, `/tl/get_factory_types?include_inactive=false`),
+            r = function(e) {
+                var t = [],
+                    n = new Set;
+                return e.forEach(function(e) {
+                    var r = v(e, [`类型id`, `id`, `type_id`]);
+                    r != null && !isNaN(r) && !n.has(String(r)) && (n.add(String(r)), t.push(e))
+                }), t
+            }(Api.unwrapList(n));
+        e.innerHTML = ``, r.length || D(e, 5, `暂无冶炼厂类型，请点击「新增冶炼厂类型」`), r.forEach(function(t) {
+            var n = v(t, [`类型id`, `id`, `type_id`]),
+                r = _(t, [`类型名`, `name`, `类型名称`], ``),
+                i = readSmTypeColor(t),
+                a = t.is_active === !1 || t.is_active === 0 || t.is_active === `0`,
+                c = WtSafeCssColor(i && i !== `-` ? String(i).trim() : ``),
+                o = `<span style="display:inline-block;width:22px;height:22px;border-radius:4px;vertical-align:middle;border:1px solid #ccc;background:` + (c || `#e2e8f0`) + `" title="` + M(String(i)) + `"></span> `,
+                s = document.createElement(`tr`);
+            s.innerHTML = `
+            <td>` + String(n) + `</td>
+            <td>` + M(r || `-`) + `</td>
+            <td>` + o + M(i) + `</td>
+            <td>` + (a ? `<span class="text-muted">停用</span>` : `<span class="text-success">启用</span>`) + `</td>
+            <td>
+                <button type="button" class="btn btn-sm btn-outline ft-edit-btn" data-id="` + String(n) + `">编辑</button>
+                <button type="button" class="btn btn-sm btn-danger ft-del-btn" data-id="` + String(n) + `">删除</button>
+            </td>`, e.appendChild(s)
+        }), t && (t.textContent = String(r.length))
+    } catch (n) {
+        console.error(n), e.innerHTML = ``, D(e, 5, n && n.message ? String(n.message) : `加载失败`)
+    }
+}
+
+function readSmTypeColor(e) {
+    var t = e[`颜色配置`];
+    if (t != null && typeof t === `object` && !Array.isArray(t)) {
+        var m = t.marker || t.color || ``;
+        if (m) return String(m)
+    }
+    var c = _(e, [`颜色配置`, `color`, `颜色`, `color_config`], ``);
+    return c == null || c === `` ? `-` : String(c)
+}
+
+async function QtFactoryType(e) {
+    let t = document.getElementById(`ft-type-name`),
+        n = t && t.value.trim(),
+        r = document.getElementById(`ft-color`),
+        i = r && r.value.trim();
+    if (!n) throw Error(`请填写类型名`);
+    i || (i = `#000000`);
+    let a = {
+        类型名: n,
+        颜色配置: { marker: i }
+    };
+    e ? (a.类型id = Number(e), a.is_active = !0, await Api.request(`POST`, `/tl/update_factory_type`, a)) : await Api.request(`POST`, `/tl/add_factory_type`, a), await ptFactoryTypes()
+}
+
+function jtFactoryType(e) {
+    e && Api.request(`GET`, `/tl/get_factory_types?include_inactive=false`).then(function(t) {
+        let n = Api.unwrapList(t).find(function(t) {
+            return v(t, [`类型id`, `id`, `type_id`]) === Number(e)
+        });
+        if (!n) throw Error(`未找到该冶炼厂类型`);
+        U(`编辑冶炼厂类型`, $eFactoryType(), {
+            onOpen: function() {
+                var t = readSmTypeColor(n);
+                document.getElementById(`ft-type-name`).value = _(n, [`类型名`, `name`, `类型名称`], ``) || ``, document.getElementById(`ft-color`).value = t && t !== `-` ? t : ``, WtWireFactoryColorControls()
+            },
+            onConfirm: function() {
+                return QtFactoryType(e)
+            }
+        })
+    }).catch(function(e) {
+        alert(e.message || String(e))
+    })
+}
+
+async function ItFactoryType(e) {
+    if (!(!e || !confirm(`确认删除该冶炼厂类型？删除后已关联该类型的冶炼厂会自动取消关联。`))) try {
+        await Api.request(`DELETE`, `/tl/delete_factory_type?type_id=` + encodeURIComponent(e)), await ptFactoryTypes()
+    } catch (e) {
+        alert(`删除失败: ` + (e.message || String(e)))
+    }
+}
+
+async function ltFactoryTypes(e, t) {
+    if (!e) return;
+    for (; e.options.length > 1;) e.remove(1);
+    try {
+        let n = await Api.request(`GET`, `/tl/get_factory_types?include_inactive=false`),
+            r = Api.unwrapList(n);
+        r.forEach(function(n) {
+            var r = v(n, [`类型id`, `id`, `type_id`]),
+                i = _(n, [`类型名`, `name`, `类型名称`], ``),
+                a = n.is_active === !1 || n.is_active === 0 || n.is_active === `0`;
+            if (r == null || isNaN(r)) return;
+            var o = document.createElement(`option`);
+            o.value = String(r), o.textContent = (a ? `[停用] ` : ``) + String(i || `类型#` + r), t != null && Number(t) === Number(r) && (o.selected = !0), e.appendChild(o)
+        })
+    } catch (t) {
+        console.error(t)
+    }
+}
 async function W() {
     let e = document.getElementById(`smelter-table-body`);
     e && E(e, 4, `正在加载冶炼厂...`);
@@ -2344,6 +2586,8 @@ async function W() {
                 id: S(e),
                 name: C(e),
                 address: Aa(e),
+                typeName: readSmTypeName(e),
+                typeId: readSmTypeId(e),
                 createdAt: x(e)
             }
         }).filter(function(e) {
@@ -3576,6 +3820,7 @@ function $(e) {
         t.innerHTML = `
             <td>${e.id}</td>
             <td>${M(e.name)}</td>
+            <td>${M(e.typeName||`-`)}</td>
             <td>${M(e.address||`-`)}</td>
             <td>
                 <button class="btn btn-sm btn-outline edit-btn" data-id="${e.id}">编辑</button>

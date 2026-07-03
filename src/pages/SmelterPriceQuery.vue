@@ -818,6 +818,12 @@ async function loadList() {
 }
 
 async function handleQuery() {
+  const start = filters.value.dateFrom
+  const end = filters.value.dateTo
+  if (start && end && end < start) {
+    showToast('结束日期不能早于开始日期，请重新选择')
+    return
+  }
   listPage.value = 1
   await Promise.all([loadChart(), loadList()])
 }
@@ -1058,10 +1064,14 @@ function updateChartTooltipPosition(point: { seriesIdx: number; dataIdx: number 
   const dateIdx = chartLayout.dateIndexMap.get(row.date) ?? -1
   const left = chartLayout.toX(dateIdx >= 0 ? dateIdx : 0) * scaleX
   const top = chartLayout.toY(row.basePrice) * scaleY
+  /** 顶部留白不够放 tooltip 时翻到数据点下方 */
+  const below = top < 90
   chartTooltipStyle.value = {
     left: `${left}px`,
     top: `${top}px`,
-    transform: 'translate(-50%, calc(-100% - 10px))',
+    transform: below
+      ? 'translate(-50%, 10px)'
+      : 'translate(-50%, calc(-100% - 10px))',
   }
 }
 
@@ -1282,7 +1292,7 @@ onBeforeUnmount(() => {
 .chart-legend { display: flex; gap: 16px; font-size: 12px; color: #606266; flex-wrap: wrap; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .legend-line { display: inline-block; width: 16px; height: 2px; background: #1476db; }
-.chart-wrap { position: relative; width: 100%; overflow: hidden; }
+.chart-wrap { position: relative; width: 100%; }
 .chart-canvas { display: block; width: 100%; cursor: crosshair; }
 .chart-tooltip {
   position: absolute;

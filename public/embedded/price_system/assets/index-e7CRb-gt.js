@@ -3644,7 +3644,7 @@ var Xa = (e, t) => {
 <p data-v-4b5a159b>维护冶炼厂基础信息，支持搜索与快捷编辑</p>
 </div>
 <div class="header-actions" data-v-4b5a159b>
-<button class="btn btn-primary" id="add-smelter-btn" data-v-4b5a159b>
+<button class="btn btn-outline" id="smelter-types-modal-btn"><i class="fas fa-tags"></i> 冶炼厂类型维护 </button><button class="btn btn-primary" id="add-smelter-btn" data-v-4b5a159b>
 <i class="fas fa-plus" data-v-4b5a159b>
 </i> 新增冶炼厂 </button>
 <div class="search-box" data-v-4b5a159b>
@@ -3666,7 +3666,7 @@ var Xa = (e, t) => {
 <tr data-v-4b5a159b>
 <th data-v-4b5a159b>ID</th>
 <th data-v-4b5a159b>冶炼厂名称</th>
-<th data-v-4b5a159b>地址</th>
+<th data-v-4b5a159b>冶炼厂类型</th><th data-v-4b5a159b>地址</th>
 <th data-v-4b5a159b>操作</th>
 </tr>
 </thead>
