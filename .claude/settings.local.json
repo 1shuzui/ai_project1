@@ -27,7 +27,9 @@
       "Bash(curl -s \"http://localhost:5174/\")",
       "Bash(curl -s -G --data-urlencode \"warehouse=唐山市俊城环保科技有限公司\" --data-urlencode \"page=1\" --data-urlencode \"page_size=200\" \"http://localhost:5174/predict/results\")",
       "Bash(grep -oE 'function Ee\\\\\\([^\\)]*\\\\\\)\\\\{[^}]{0,2000}' app-BZHDhlyu.js)",
-      "Bash(node test_verify_changes.mjs)"
+      "Bash(node test_verify_changes.mjs)",
+      "Bash(grep -o '.\\\\{0,10\\\\}wt-color-palette.\\\\{0,10\\\\}' \"public/embedded/price_system/assets/app-BZHDhlyu.js\")",
+      "Bash(xxd)"
     ]
   }
 }

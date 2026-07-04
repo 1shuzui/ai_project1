@@ -194,37 +194,82 @@ function WtEnsureVividGrayOption(e) {
         } e.appendChild(n)
 }
 
-function WtWireColorControls() {
-    var e = document.getElementById(`wt-color-vivid`),
-        t = document.getElementById(`wt-color`),
-        n = document.getElementById(`wt-color-preview`);
-    WtEnsureVividGrayOption(e);
-    if (!t) return;
-    if (t.dataset.wtWired) return;
-    t.dataset.wtWired = `1`;
-
-    function r() {
-        var e = (t.value || ``).trim(),
-            i = WtSafeCssColor(e);
-        n && (n.style.cssText = `display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:` + (i || `#e2e8f0`))
+function WtRgbToHex(e) {
+    var t = String(e || ``).trim();
+    if (!t) return ``;
+    // 已经是合法 hex 则直接返回（补全 # 前缀和 3→6 位）
+    if (/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(t)) {
+        t = t.replace(/^#/, ``);
+        if (t.length === 3) t = t[0]+t[0]+t[1]+t[1]+t[2]+t[2];
+        return `#` + t;
     }
+    // rgb / rgba 格式
+    var m = t.match(/rgba?\s*\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/i);
+    if (m) return `#` + [Number(m[1]), Number(m[2]), Number(m[3])].map(function(v) {
+        var h = Math.min(255, Math.max(0, v)).toString(16);
+        return h.length === 1 ? `0` + h : h;
+    }).join(``);
+    // 纯数字逗号分隔：255,128,64
+    var n = t.match(/^\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*$/);
+    if (n) return `#` + [Number(n[1]), Number(n[2]), Number(n[3])].map(function(v) {
+        var h = Math.min(255, Math.max(0, v)).toString(16);
+        return h.length === 1 ? `0` + h : h;
+    }).join(``);
+    return ``;
+}
 
-    function i() {
-        var n = (t.value || ``).trim();
-        if (e) {
-            e.selectedIndex = 0;
-            for (var i = 1; i < e.options.length; i++)
-                if (e.options[i].value === n) {
-                    e.selectedIndex = i;
-                    break
-                }
+function WtWireColorControls() {
+    var r = document.getElementById(`wt-color-r`),
+        g = document.getElementById(`wt-color-g`),
+        b = document.getElementById(`wt-color-b`),
+        t = document.getElementById(`wt-color`),
+        n = document.getElementById(`wt-color-preview`),
+        p = document.getElementById(`wt-color-palette`),
+        c = document.getElementById(`wt-color-native`);
+    if (!r || !g || !b) return;
+    if (r.dataset.wtPalV5) return;
+    r.dataset.wtPalV5 = `1`;
+    function u() {
+        var rv = Math.min(255, Math.max(0, parseInt(r.value, 10) || 0)),
+            gv = Math.min(255, Math.max(0, parseInt(g.value, 10) || 0)),
+            bv = Math.min(255, Math.max(0, parseInt(b.value, 10) || 0));
+        r.value = rv; g.value = gv; b.value = bv;
+        var e = [rv, gv, bv].map(function(v) {
+            var h = v.toString(16);
+            return h.length === 1 ? `0` + h : h;
+        }).join(``);
+        t.value = `#` + e;
+        var i = WtSafeCssColor(`#` + e);
+        n && (n.style.cssText = `display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:` + (i || `#e2e8f0`));
+        c && (c.value = `#` + e);
+        if (p) {
+            var a = p.querySelectorAll(`.color-swatch`);
+            for (var s = 0; s < a.length; s++) {
+                var sw = a[s], clr = sw.getAttribute(`data-color`) || ``;
+                sw.classList.toggle(`active`, clr.toLowerCase() === `#` + e);
+            }
         }
     }
-    e && !e.dataset.wtWired && (e.dataset.wtWired = `1`, e.addEventListener(`change`, function() {
-        this.value && (t.value = this.value), r()
-    })), t.addEventListener(`input`, r), t.addEventListener(`change`, function() {
-        i(), r()
-    }), i(), r()
+    function f(h) {
+        if (!h || h.length < 7) return;
+        var rr = parseInt(h.substr(1,2), 16),
+            gg = parseInt(h.substr(3,2), 16),
+            bb = parseInt(h.substr(5,2), 16);
+        if (isNaN(rr) || isNaN(gg) || isNaN(bb)) return;
+        r.value = rr; g.value = gg; b.value = bb; u();
+    }
+    p && p.addEventListener(`click`, function(e) {
+        var sw = e.target.closest(`.color-swatch`);
+        if (!sw) return;
+        var clr = sw.getAttribute(`data-color`) || ``;
+        f(clr)
+    });
+    c && c.addEventListener(`input`, function() {
+        c.value && f(c.value)
+    });
+    r.addEventListener(`input`, u); g.addEventListener(`input`, u); b.addEventListener(`input`, u);
+    r.addEventListener(`change`, u); g.addEventListener(`change`, u); b.addEventListener(`change`, u);
+    u()
 }
 
 function Za(e) {
@@ -1477,21 +1522,90 @@ function $eType() {
                 <label>颜色配置（可选）</label>
                 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0">
                     <span id="wt-color-preview" title="预览" style="display:inline-block;width:28px;height:28px;border-radius:6px;border:1px solid #cbd5e1;background:#e2e8f0"></span>
-                    <select id="wt-color-vivid" class="form-control" style="max-width:150px">
-                        <option value="">选色…</option>
-                        <option value="#dc2626">红</option>
-                        <option value="#ea580c">橙</option>
-                        <option value="#eab308">黄</option>
-                        <option value="#16a34a">绿</option>
-                        <option value="#0891b2">青</option>
-                        <option value="#2563eb">蓝</option>
-                        <option value="#7c3aed">紫</option>
-                        <option value="#6b7280">灰色</option>
-                        <option value="#ffffff">白</option>
-                        <option value="#000000">黑</option>
-                    </select>
+                    <div class="color-palette" id="wt-color-palette" style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;max-width:420px">
+                    <span class="color-swatch" data-color="#fca5a5" title="#fca5a5" style="background:#fca5a5"></span>
+                    <span class="color-swatch" data-color="#f87171" title="#f87171" style="background:#f87171"></span>
+                    <span class="color-swatch" data-color="#ef4444" title="#ef4444" style="background:#ef4444"></span>
+                    <span class="color-swatch" data-color="#dc2626" title="#dc2626" style="background:#dc2626"></span>
+                    <span class="color-swatch" data-color="#b91c1c" title="#b91c1c" style="background:#b91c1c"></span>
+                    <span class="color-swatch" data-color="#991b1b" title="#991b1b" style="background:#991b1b"></span>
+                    <span class="color-swatch" data-color="#fdba74" title="#fdba74" style="background:#fdba74"></span>
+                    <span class="color-swatch" data-color="#fb923c" title="#fb923c" style="background:#fb923c"></span>
+                    <span class="color-swatch" data-color="#f97316" title="#f97316" style="background:#f97316"></span>
+                    <span class="color-swatch" data-color="#ea580c" title="#ea580c" style="background:#ea580c"></span>
+                    <span class="color-swatch" data-color="#c2410c" title="#c2410c" style="background:#c2410c"></span>
+                    <span class="color-swatch" data-color="#fde68a" title="#fde68a" style="background:#fde68a"></span>
+                    <span class="color-swatch" data-color="#fcd34d" title="#fcd34d" style="background:#fcd34d"></span>
+                    <span class="color-swatch" data-color="#fbbf24" title="#fbbf24" style="background:#fbbf24"></span>
+                    <span class="color-swatch" data-color="#f59e0b" title="#f59e0b" style="background:#f59e0b"></span>
+                    <span class="color-swatch" data-color="#facc15" title="#facc15" style="background:#facc15"></span>
+                    <span class="color-swatch" data-color="#eab308" title="#eab308" style="background:#eab308"></span>
+                    <span class="color-swatch" data-color="#a3e635" title="#a3e635" style="background:#a3e635"></span>
+                    <span class="color-swatch" data-color="#84cc16" title="#84cc16" style="background:#84cc16"></span>
+                    <span class="color-swatch" data-color="#86efac" title="#86efac" style="background:#86efac"></span>
+                    <span class="color-swatch" data-color="#4ade80" title="#4ade80" style="background:#4ade80"></span>
+                    <span class="color-swatch" data-color="#22c55e" title="#22c55e" style="background:#22c55e"></span>
+                    <span class="color-swatch" data-color="#16a34a" title="#16a34a" style="background:#16a34a"></span>
+                    <span class="color-swatch" data-color="#15803d" title="#15803d" style="background:#15803d"></span>
+                    <span class="color-swatch" data-color="#6ee7b7" title="#6ee7b7" style="background:#6ee7b7"></span>
+                    <span class="color-swatch" data-color="#34d399" title="#34d399" style="background:#34d399"></span>
+                    <span class="color-swatch" data-color="#10b981" title="#10b981" style="background:#10b981"></span>
+                    <span class="color-swatch" data-color="#2dd4bf" title="#2dd4bf" style="background:#2dd4bf"></span>
+                    <span class="color-swatch" data-color="#14b8a6" title="#14b8a6" style="background:#14b8a6"></span>
+                    <span class="color-swatch" data-color="#0d9488" title="#0d9488" style="background:#0d9488"></span>
+                    <span class="color-swatch" data-color="#22d3ee" title="#22d3ee" style="background:#22d3ee"></span>
+                    <span class="color-swatch" data-color="#06b6d4" title="#06b6d4" style="background:#06b6d4"></span>
+                    <span class="color-swatch" data-color="#0891b2" title="#0891b2" style="background:#0891b2"></span>
+                    <span class="color-swatch" data-color="#7dd3fc" title="#7dd3fc" style="background:#7dd3fc"></span>
+                    <span class="color-swatch" data-color="#38bdf8" title="#38bdf8" style="background:#38bdf8"></span>
+                    <span class="color-swatch" data-color="#0ea5e9" title="#0ea5e9" style="background:#0ea5e9"></span>
+                    <span class="color-swatch" data-color="#0284c7" title="#0284c7" style="background:#0284c7"></span>
+                    <span class="color-swatch" data-color="#93c5fd" title="#93c5fd" style="background:#93c5fd"></span>
+                    <span class="color-swatch" data-color="#60a5fa" title="#60a5fa" style="background:#60a5fa"></span>
+                    <span class="color-swatch" data-color="#3b82f6" title="#3b82f6" style="background:#3b82f6"></span>
+                    <span class="color-swatch" data-color="#2563eb" title="#2563eb" style="background:#2563eb"></span>
+                    <span class="color-swatch" data-color="#1d4ed8" title="#1d4ed8" style="background:#1d4ed8"></span>
+                    <span class="color-swatch" data-color="#818cf8" title="#818cf8" style="background:#818cf8"></span>
+                    <span class="color-swatch" data-color="#6366f1" title="#6366f1" style="background:#6366f1"></span>
+                    <span class="color-swatch" data-color="#4f46e5" title="#4f46e5" style="background:#4f46e5"></span>
+                    <span class="color-swatch" data-color="#a78bfa" title="#a78bfa" style="background:#a78bfa"></span>
+                    <span class="color-swatch" data-color="#8b5cf6" title="#8b5cf6" style="background:#8b5cf6"></span>
+                    <span class="color-swatch" data-color="#7c3aed" title="#7c3aed" style="background:#7c3aed"></span>
+                    <span class="color-swatch" data-color="#c084fc" title="#c084fc" style="background:#c084fc"></span>
+                    <span class="color-swatch" data-color="#a855f7" title="#a855f7" style="background:#a855f7"></span>
+                    <span class="color-swatch" data-color="#9333ea" title="#9333ea" style="background:#9333ea"></span>
+                    <span class="color-swatch" data-color="#f0abfc" title="#f0abfc" style="background:#f0abfc"></span>
+                    <span class="color-swatch" data-color="#e879f9" title="#e879f9" style="background:#e879f9"></span>
+                    <span class="color-swatch" data-color="#d946ef" title="#d946ef" style="background:#d946ef"></span>
+                    <span class="color-swatch" data-color="#f9a8d4" title="#f9a8d4" style="background:#f9a8d4"></span>
+                    <span class="color-swatch" data-color="#f472b6" title="#f472b6" style="background:#f472b6"></span>
+                    <span class="color-swatch" data-color="#ec4899" title="#ec4899" style="background:#ec4899"></span>
+                    <span class="color-swatch" data-color="#db2777" title="#db2777" style="background:#db2777"></span>
+                    <span class="color-swatch" data-color="#fda4af" title="#fda4af" style="background:#fda4af"></span>
+                    <span class="color-swatch" data-color="#fb7185" title="#fb7185" style="background:#fb7185"></span>
+                    <span class="color-swatch" data-color="#f43f5e" title="#f43f5e" style="background:#f43f5e"></span>
+                    <span class="color-swatch" data-color="#e11d48" title="#e11d48" style="background:#e11d48"></span>
+                    <span class="color-swatch" data-color="#be123c" title="#be123c" style="background:#be123c"></span>
+                    <span class="color-swatch" data-color="#94a3b8" title="#94a3b8" style="background:#94a3b8"></span>
+                    <span class="color-swatch" data-color="#64748b" title="#64748b" style="background:#64748b"></span>
+                    <span class="color-swatch" data-color="#475569" title="#475569" style="background:#475569"></span>
+                    <span class="color-swatch" data-color="#6b7280" title="#6b7280" style="background:#6b7280"></span>
+                    <span class="color-swatch" data-color="#4b5563" title="#4b5563" style="background:#4b5563"></span>
+                    <span class="color-swatch" data-color="#374151" title="#374151" style="background:#374151"></span>
+                    <span class="color-swatch" data-color="#1f2937" title="#1f2937" style="background:#1f2937"></span>
+                    <span class="color-swatch" data-color="#ffffff" title="#ffffff" style="background:#ffffff"></span>
+                    <span class="color-swatch" data-color="#000000" title="#000000" style="background:#000000"></span>
                 </div>
-                <input type="text" id="wt-color" class="form-control" placeholder="#RRGGBB，或从上方下拉选色；留空为黑色">
+                </div>
+                <label style="font-size:0.85rem;color:#475569;margin-top:4px;display:block">自定义颜色 <span style="font-weight:400;color:#94a3b8">（RGB 三通道，0–255）</span></label>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                    <input type="color" id="wt-color-native" class="color-native-input" title="打开系统取色器">
+                    <input type="number" id="wt-color-r" class="form-control" placeholder="R" min="0" max="255" style="width:68px;text-align:center" title="红色 0-255">
+                    <input type="number" id="wt-color-g" class="form-control" placeholder="G" min="0" max="255" style="width:68px;text-align:center" title="绿色 0-255">
+                    <input type="number" id="wt-color-b" class="form-control" placeholder="B" min="0" max="255" style="width:68px;text-align:center" title="蓝色 0-255">
+                    <input type="text" id="wt-color" style="display:none">
+                    <span id="wt-color-preview" style="display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:#e2e8f0;flex-shrink:0"></span>
+                </div>
                 <small class="form-text">不填时自动使用黑色 <code>#000000</code></small>
             </div>
         </form>
@@ -2413,21 +2527,90 @@ function $eFactoryType() {
                 <label>颜色配置（可选）</label>
                 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:8px 0">
                     <span id="ft-color-preview" title="预览" style="display:inline-block;width:28px;height:28px;border-radius:6px;border:1px solid #cbd5e1;background:#e2e8f0"></span>
-                    <select id="ft-color-vivid" class="form-control" style="max-width:150px">
-                        <option value="">选色…</option>
-                        <option value="#dc2626">红</option>
-                        <option value="#ea580c">橙</option>
-                        <option value="#eab308">黄</option>
-                        <option value="#16a34a">绿</option>
-                        <option value="#0891b2">青</option>
-                        <option value="#2563eb">蓝</option>
-                        <option value="#7c3aed">紫</option>
-                        <option value="#6b7280">灰色</option>
-                        <option value="#ffffff">白</option>
-                        <option value="#000000">黑</option>
-                    </select>
+                    <div class="color-palette" id="ft-color-palette" style="display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;max-width:420px">
+                    <span class="color-swatch" data-color="#fca5a5" title="#fca5a5" style="background:#fca5a5"></span>
+                    <span class="color-swatch" data-color="#f87171" title="#f87171" style="background:#f87171"></span>
+                    <span class="color-swatch" data-color="#ef4444" title="#ef4444" style="background:#ef4444"></span>
+                    <span class="color-swatch" data-color="#dc2626" title="#dc2626" style="background:#dc2626"></span>
+                    <span class="color-swatch" data-color="#b91c1c" title="#b91c1c" style="background:#b91c1c"></span>
+                    <span class="color-swatch" data-color="#991b1b" title="#991b1b" style="background:#991b1b"></span>
+                    <span class="color-swatch" data-color="#fdba74" title="#fdba74" style="background:#fdba74"></span>
+                    <span class="color-swatch" data-color="#fb923c" title="#fb923c" style="background:#fb923c"></span>
+                    <span class="color-swatch" data-color="#f97316" title="#f97316" style="background:#f97316"></span>
+                    <span class="color-swatch" data-color="#ea580c" title="#ea580c" style="background:#ea580c"></span>
+                    <span class="color-swatch" data-color="#c2410c" title="#c2410c" style="background:#c2410c"></span>
+                    <span class="color-swatch" data-color="#fde68a" title="#fde68a" style="background:#fde68a"></span>
+                    <span class="color-swatch" data-color="#fcd34d" title="#fcd34d" style="background:#fcd34d"></span>
+                    <span class="color-swatch" data-color="#fbbf24" title="#fbbf24" style="background:#fbbf24"></span>
+                    <span class="color-swatch" data-color="#f59e0b" title="#f59e0b" style="background:#f59e0b"></span>
+                    <span class="color-swatch" data-color="#facc15" title="#facc15" style="background:#facc15"></span>
+                    <span class="color-swatch" data-color="#eab308" title="#eab308" style="background:#eab308"></span>
+                    <span class="color-swatch" data-color="#a3e635" title="#a3e635" style="background:#a3e635"></span>
+                    <span class="color-swatch" data-color="#84cc16" title="#84cc16" style="background:#84cc16"></span>
+                    <span class="color-swatch" data-color="#86efac" title="#86efac" style="background:#86efac"></span>
+                    <span class="color-swatch" data-color="#4ade80" title="#4ade80" style="background:#4ade80"></span>
+                    <span class="color-swatch" data-color="#22c55e" title="#22c55e" style="background:#22c55e"></span>
+                    <span class="color-swatch" data-color="#16a34a" title="#16a34a" style="background:#16a34a"></span>
+                    <span class="color-swatch" data-color="#15803d" title="#15803d" style="background:#15803d"></span>
+                    <span class="color-swatch" data-color="#6ee7b7" title="#6ee7b7" style="background:#6ee7b7"></span>
+                    <span class="color-swatch" data-color="#34d399" title="#34d399" style="background:#34d399"></span>
+                    <span class="color-swatch" data-color="#10b981" title="#10b981" style="background:#10b981"></span>
+                    <span class="color-swatch" data-color="#2dd4bf" title="#2dd4bf" style="background:#2dd4bf"></span>
+                    <span class="color-swatch" data-color="#14b8a6" title="#14b8a6" style="background:#14b8a6"></span>
+                    <span class="color-swatch" data-color="#0d9488" title="#0d9488" style="background:#0d9488"></span>
+                    <span class="color-swatch" data-color="#22d3ee" title="#22d3ee" style="background:#22d3ee"></span>
+                    <span class="color-swatch" data-color="#06b6d4" title="#06b6d4" style="background:#06b6d4"></span>
+                    <span class="color-swatch" data-color="#0891b2" title="#0891b2" style="background:#0891b2"></span>
+                    <span class="color-swatch" data-color="#7dd3fc" title="#7dd3fc" style="background:#7dd3fc"></span>
+                    <span class="color-swatch" data-color="#38bdf8" title="#38bdf8" style="background:#38bdf8"></span>
+                    <span class="color-swatch" data-color="#0ea5e9" title="#0ea5e9" style="background:#0ea5e9"></span>
+                    <span class="color-swatch" data-color="#0284c7" title="#0284c7" style="background:#0284c7"></span>
+                    <span class="color-swatch" data-color="#93c5fd" title="#93c5fd" style="background:#93c5fd"></span>
+                    <span class="color-swatch" data-color="#60a5fa" title="#60a5fa" style="background:#60a5fa"></span>
+                    <span class="color-swatch" data-color="#3b82f6" title="#3b82f6" style="background:#3b82f6"></span>
+                    <span class="color-swatch" data-color="#2563eb" title="#2563eb" style="background:#2563eb"></span>
+                    <span class="color-swatch" data-color="#1d4ed8" title="#1d4ed8" style="background:#1d4ed8"></span>
+                    <span class="color-swatch" data-color="#818cf8" title="#818cf8" style="background:#818cf8"></span>
+                    <span class="color-swatch" data-color="#6366f1" title="#6366f1" style="background:#6366f1"></span>
+                    <span class="color-swatch" data-color="#4f46e5" title="#4f46e5" style="background:#4f46e5"></span>
+                    <span class="color-swatch" data-color="#a78bfa" title="#a78bfa" style="background:#a78bfa"></span>
+                    <span class="color-swatch" data-color="#8b5cf6" title="#8b5cf6" style="background:#8b5cf6"></span>
+                    <span class="color-swatch" data-color="#7c3aed" title="#7c3aed" style="background:#7c3aed"></span>
+                    <span class="color-swatch" data-color="#c084fc" title="#c084fc" style="background:#c084fc"></span>
+                    <span class="color-swatch" data-color="#a855f7" title="#a855f7" style="background:#a855f7"></span>
+                    <span class="color-swatch" data-color="#9333ea" title="#9333ea" style="background:#9333ea"></span>
+                    <span class="color-swatch" data-color="#f0abfc" title="#f0abfc" style="background:#f0abfc"></span>
+                    <span class="color-swatch" data-color="#e879f9" title="#e879f9" style="background:#e879f9"></span>
+                    <span class="color-swatch" data-color="#d946ef" title="#d946ef" style="background:#d946ef"></span>
+                    <span class="color-swatch" data-color="#f9a8d4" title="#f9a8d4" style="background:#f9a8d4"></span>
+                    <span class="color-swatch" data-color="#f472b6" title="#f472b6" style="background:#f472b6"></span>
+                    <span class="color-swatch" data-color="#ec4899" title="#ec4899" style="background:#ec4899"></span>
+                    <span class="color-swatch" data-color="#db2777" title="#db2777" style="background:#db2777"></span>
+                    <span class="color-swatch" data-color="#fda4af" title="#fda4af" style="background:#fda4af"></span>
+                    <span class="color-swatch" data-color="#fb7185" title="#fb7185" style="background:#fb7185"></span>
+                    <span class="color-swatch" data-color="#f43f5e" title="#f43f5e" style="background:#f43f5e"></span>
+                    <span class="color-swatch" data-color="#e11d48" title="#e11d48" style="background:#e11d48"></span>
+                    <span class="color-swatch" data-color="#be123c" title="#be123c" style="background:#be123c"></span>
+                    <span class="color-swatch" data-color="#94a3b8" title="#94a3b8" style="background:#94a3b8"></span>
+                    <span class="color-swatch" data-color="#64748b" title="#64748b" style="background:#64748b"></span>
+                    <span class="color-swatch" data-color="#475569" title="#475569" style="background:#475569"></span>
+                    <span class="color-swatch" data-color="#6b7280" title="#6b7280" style="background:#6b7280"></span>
+                    <span class="color-swatch" data-color="#4b5563" title="#4b5563" style="background:#4b5563"></span>
+                    <span class="color-swatch" data-color="#374151" title="#374151" style="background:#374151"></span>
+                    <span class="color-swatch" data-color="#1f2937" title="#1f2937" style="background:#1f2937"></span>
+                    <span class="color-swatch" data-color="#ffffff" title="#ffffff" style="background:#ffffff"></span>
+                    <span class="color-swatch" data-color="#000000" title="#000000" style="background:#000000"></span>
                 </div>
-                <input type="text" id="ft-color" class="form-control" placeholder="#RRGGBB，或从上方下拉选色；留空为黑色">
+                </div>
+                <label style="font-size:0.85rem;color:#475569;margin-top:4px;display:block">自定义颜色 <span style="font-weight:400;color:#94a3b8">（RGB 三通道，0–255）</span></label>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                    <input type="color" id="ft-color-native" class="color-native-input" title="打开系统取色器">
+                    <input type="number" id="ft-color-r" class="form-control" placeholder="R" min="0" max="255" style="width:68px;text-align:center" title="红色 0-255">
+                    <input type="number" id="ft-color-g" class="form-control" placeholder="G" min="0" max="255" style="width:68px;text-align:center" title="绿色 0-255">
+                    <input type="number" id="ft-color-b" class="form-control" placeholder="B" min="0" max="255" style="width:68px;text-align:center" title="蓝色 0-255">
+                    <input type="text" id="ft-color" style="display:none">
+                    <span id="ft-color-preview" style="display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:#e2e8f0;flex-shrink:0"></span>
+                </div>
                 <small class="form-text">不填时自动使用黑色 <code>#000000</code></small>
             </div>
         </form>
@@ -2435,37 +2618,57 @@ function $eFactoryType() {
 }
 
 function WtWireFactoryColorControls() {
-    var e = document.getElementById(`ft-color-vivid`),
+    var r = document.getElementById(`ft-color-r`),
+        g = document.getElementById(`ft-color-g`),
+        b = document.getElementById(`ft-color-b`),
         t = document.getElementById(`ft-color`),
-        n = document.getElementById(`ft-color-preview`);
-    WtEnsureVividGrayOption(e);
-    if (!t) return;
-    if (t.dataset.ftWired) return;
-    t.dataset.ftWired = `1`;
-    function r() {
-        var e = (t.value || ``).trim(),
-            i = WtSafeCssColor(e);
-        n && (n.style.cssText = `display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:` + (i || `#e2e8f0`))
-    }
-    function i() {
-        var n = (t.value || ``).trim();
-        if (e) {
-            var a = e.value;
-            if (a && n) {
-                var o = n.toLowerCase();
-                for (var s = 0; s < e.options.length; s++)
-                    if (String(e.options[s].value).toLowerCase() === o) {
-                        e.options[s].selected = !0;
-                        return
-                    }
+        n = document.getElementById(`ft-color-preview`),
+        p = document.getElementById(`ft-color-palette`),
+        c = document.getElementById(`ft-color-native`);
+    if (!r || !g || !b) return;
+    if (r.dataset.ftPalV5) return;
+    r.dataset.ftPalV5 = `1`;
+    function u() {
+        var rv = Math.min(255, Math.max(0, parseInt(r.value, 10) || 0)),
+            gv = Math.min(255, Math.max(0, parseInt(g.value, 10) || 0)),
+            bv = Math.min(255, Math.max(0, parseInt(b.value, 10) || 0));
+        r.value = rv; g.value = gv; b.value = bv;
+        var e = [rv, gv, bv].map(function(v) {
+            var h = v.toString(16);
+            return h.length === 1 ? `0` + h : h;
+        }).join(``);
+        t.value = `#` + e;
+        var i = WtSafeCssColor(`#` + e);
+        n && (n.style.cssText = `display:inline-block;width:28px;height:28px;border-radius:6px;vertical-align:middle;border:1px solid #cbd5e1;background:` + (i || `#e2e8f0`));
+        c && (c.value = `#` + e);
+        if (p) {
+            var a = p.querySelectorAll(`.color-swatch`);
+            for (var s = 0; s < a.length; s++) {
+                var sw = a[s], clr = sw.getAttribute(`data-color`) || ``;
+                sw.classList.toggle(`active`, clr.toLowerCase() === `#` + e);
             }
-            if (a && !n) return
         }
     }
-    t.addEventListener(`input`, r), t.addEventListener(`change`, function() { r(), i() }), e && e.addEventListener(`change`, function() {
-        var n = e.value;
-        n && (t.value = n, r())
-    }), r(), i()
+    function f(h) {
+        if (!h || h.length < 7) return;
+        var rr = parseInt(h.substr(1,2), 16),
+            gg = parseInt(h.substr(3,2), 16),
+            bb = parseInt(h.substr(5,2), 16);
+        if (isNaN(rr) || isNaN(gg) || isNaN(bb)) return;
+        r.value = rr; g.value = gg; b.value = bb; u();
+    }
+    p && p.addEventListener(`click`, function(e) {
+        var sw = e.target.closest(`.color-swatch`);
+        if (!sw) return;
+        var clr = sw.getAttribute(`data-color`) || ``;
+        f(clr)
+    });
+    c && c.addEventListener(`input`, function() {
+        c.value && f(c.value)
+    });
+    r.addEventListener(`input`, u); g.addEventListener(`input`, u); b.addEventListener(`input`, u);
+    r.addEventListener(`change`, u); g.addEventListener(`change`, u); b.addEventListener(`change`, u);
+    u()
 }
 
 async function ptFactoryTypes() {
