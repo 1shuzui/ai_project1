@@ -949,9 +949,10 @@ function Re() {
         U(`新增库房`, qe(), {
             onOpen: async function() {
                 var e = document.getElementById(`warehouse-type-select`),
+                    wc4 = document.getElementById(`warehouse-category-select`),
                     t = document.getElementById(`warehouse-address`),
                     f = document.getElementById(`warehouse-form`);
-                e && await ltTypes(e, null), t && (t.value = ``), f && (f.dataset.wProv = f.dataset.wCity = f.dataset.wDist = ``);
+                e && await ltTypes(e, null), wc4 && await ltCategories(wc4, null), t && (t.value = ``), f && (f.dataset.wProv = f.dataset.wCity = f.dataset.wDist = ``);
                 [`warehouse-contact`, `warehouse-phone`, `warehouse-hazmat-permit-qty`, `warehouse-monthly-inbound`].forEach(function(id) {
                     var el = document.getElementById(id);
                     el && (el.value = ``)
@@ -981,7 +982,18 @@ function Re() {
         G()
     }), n && n.addEventListener(`keydown`, function(e) {
         e.key === `Enter` && (e.preventDefault(), G())
-    }), G()
+    }), G();
+    var whTbl = document.querySelector(`#warehouse-table-body`)?.closest(`table`);
+    if (whTbl && !whTbl.querySelector(`.wh-cat-col`)) {
+        var _thr = whTbl.querySelectorAll(`thead tr`);
+        for (var _ti = 0; _ti < _thr.length; _ti++) {
+            var _ths = _thr[_ti].querySelectorAll(`th`);
+            if (_ths.length >= 2) {
+                var _nth = document.createElement(`th`);
+                _nth.className = `wh-cat-col`, _nth.textContent = `大类`, _ths[1].after(_nth)
+            }
+        }
+    }
 }
 
 function ze() {
@@ -1488,6 +1500,12 @@ function qe() {
                 </select>
             </div>
             <div class="form-group">
+                <label for="warehouse-category-select">大类 <span style="font-weight:400;color:#94a3b8">（可选，覆盖类型默认大类）</span></label>
+                <select id="warehouse-category-select" class="form-control">
+                    <option value="">继承类型</option>
+                </select>
+            </div>
+            <div class="form-group">
                 <label for="warehouse-address">库房地址</label>
                 <input type="text" id="warehouse-address" class="form-control" placeholder="编辑时可只改街道门牌；省/市/区沿用本条已保存区划">
             </div>
@@ -1517,6 +1535,12 @@ function $eType() {
             <div class="form-group">
                 <label for="wt-type-name">类型名 <span class="required">*</span></label>
                 <input type="text" id="wt-type-name" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label for="wt-category-select">大类</label>
+                <select id="wt-category-select" class="form-control">
+                    <option value="">不指定</option>
+                </select>
             </div>
             <div class="form-group">
                 <label>颜色配置（可选）</label>
@@ -1612,15 +1636,34 @@ function $eType() {
     `
 }
 
+function $eCategory() {
+    return `
+        <form id="warehouse-category-form">
+            <div class="form-group">
+                <label for="wc-name">大类名 <span class="required">*</span></label>
+                <input type="text" id="wc-name" class="form-control" required>
+            </div>
+        </form>
+    `
+}
+
 function UtModalBody() {
     return `
         <div class="warehouse-types-modal-inner">
+            <h6 style="margin-bottom:8px;font-weight:600">大类管理</h6>
+            <button type="button" class="btn btn-primary btn-sm mb-2" id="wc-modal-add-btn"><i class="fas fa-plus"></i> 新增大类</button>
+            <p class="text-muted small mb-2">共 <span id="warehouse-category-count">0</span> 条</p>
+            <div class="table-responsive" style="max-height:200px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
+                <table class="data-table" style="width:100%;margin:0"><thead><tr><th>大类ID</th><th>大类名</th><th>状态</th><th>操作</th></tr></thead><tbody id="warehouse-category-table-body"></tbody></table>
+            </div>
+            <hr style="margin:16px 0;border-color:#e5e7eb">
+            <h6 style="margin-bottom:8px;font-weight:600">库房类型</h6>
             <button type="button" class="btn btn-primary btn-sm mb-2" id="wt-modal-add-btn"><i class="fas fa-plus"></i> 新增库房类型</button>
             <p class="text-muted small mb-2">共 <span id="warehouse-type-count">0</span> 条</p>
-            <div class="table-responsive" style="max-height:380px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
-                <table class="data-table" style="width:100%;margin:0"><thead><tr><th>类型ID</th><th>类型名</th><th>颜色</th><th>状态</th><th>操作</th></tr></thead><tbody id="warehouse-type-table-body"></tbody></table>
+            <div class="table-responsive" style="max-height:220px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
+                <table class="data-table" style="width:100%;margin:0"><thead><tr><th>类型ID</th><th>类型名</th><th>大类</th><th>颜色</th><th>状态</th><th>操作</th></tr></thead><tbody id="warehouse-type-table-body"></tbody></table>
             </div>
-            <p class="text-muted small mb-0 mt-2">类型与颜色供库房列表展示；停用后新建库房不可选。点击下方「确认」关闭本窗口。</p>
+            <p class="text-muted small mb-0 mt-2">类型与颜色供库房列表展示；大类用于分组筛选。点击下方「确认」关闭本窗口。</p>
         </div>
     `
 }
@@ -1631,7 +1674,9 @@ function vtOpenTypesModal() {
             var e = document.getElementById(`wt-modal-add-btn`);
             e && (e.onclick = function(e) {
                 e.preventDefault(), e.stopPropagation(), U(`新增库房类型`, $eType(), {
-                    onOpen: function() {
+                    onOpen: async function() {
+                        var _wc2 = document.getElementById(`wt-category-select`);
+                        _wc2 && await ltCategories(_wc2, null);
                         WtWireColorControls()
                     },
                     onConfirm: function() {
@@ -1644,7 +1689,22 @@ function vtOpenTypesModal() {
                 var n = e.target.closest(`.wt-edit-btn`),
                     r = e.target.closest(`.wt-del-btn`);
                 n ? jtType(parseInt(n.getAttribute(`data-id`), 10)) : r && ItType(parseInt(r.getAttribute(`data-id`), 10))
-            })), await ptTypes()
+            }));
+            var wcAdd = document.getElementById(`wc-modal-add-btn`);
+            wcAdd && (wcAdd.onclick = function(e) {
+                e.preventDefault(), e.stopPropagation(), U(`新增大类`, $eCategory(), {
+                    onConfirm: function() {
+                        return QtCategory(null)
+                    }
+                })
+            });
+            var wcTbody = document.getElementById(`warehouse-category-table-body`);
+            wcTbody && !wcTbody.dataset.wcDlg && (wcTbody.dataset.wcDlg = `1`, wcTbody.addEventListener(`click`, function(e) {
+                var n = e.target.closest(`.wc-edit-btn`),
+                    r = e.target.closest(`.wc-del-btn`);
+                n ? jtCategory(parseInt(n.getAttribute(`data-id`), 10)) : r && ItCategory(parseInt(r.getAttribute(`data-id`), 10))
+            }));
+            await ptTypes(), await ptCategories()
         },
         onConfirm: function() {
             return !0
@@ -1797,9 +1857,12 @@ async function tt(e) {
         a = document.getElementById(`warehouse-type-select`),
         o = a ? parseInt(a.value, 10) : NaN,
         s = a && a.selectedOptions && a.selectedOptions[0] ? String(a.selectedOptions[0].textContent || ``).replace(/^\[停用\]\s*/, ``).trim() : ``,
+        _wcw = document.getElementById(`warehouse-category-select`),
+        _wcwid = _wcw ? parseInt(_wcw.value, 10) : NaN,
         c = {
             仓库名: n
         };
+    if (!isNaN(_wcwid) && _wcwid > 0) c.大类id = _wcwid; else if (e) c.大类id = null;
     if (!i) throw Error(`请填写库房地址（需含省市区）`);
     if (i) {
         var l = splitCnAddress(i) || {},
@@ -1870,17 +1933,18 @@ async function tt(e) {
                         var _btn = _rows[_i].querySelector(`.edit-btn[data-id="` + e + `"]`);
                         if (_btn) {
                             var _tds = _rows[_i].querySelectorAll(`td`);
-                            if (_tds.length >= 7) {
+                            if (_tds.length >= 8) {
                                 _tds[1].textContent = T(_whRow) || `-`;
-                                _tds[2].textContent = Aa(_whRow) || `-`;
-                                _tds[3].textContent = wa(_whRow) || `-`;
+                                _tds[2].textContent = _(_whRow, [`大类`], ``) || `-`;
+                                _tds[3].textContent = Aa(_whRow) || `-`;
+                                _tds[4].textContent = wa(_whRow) || `-`;
                                 var _clr = WtSafeCssColor(String(xa(_whRow) || ``).trim());
-                                if (_tds[4]) {
-                                    var _sw = _tds[4].querySelector(`span`);
+                                if (_tds[5]) {
+                                    var _sw = _tds[5].querySelector(`span`);
                                     if (_sw) _sw.style.background = _clr || `#e2e8f0`
                                 }
-                                _tds[5].textContent = String(_(_whRow, [`库房联系人`, `联系人`], ``) || `-`);
-                                _tds[6].textContent = String(_(_whRow, [`电话`, `联系电话`, `手机`], ``) || `-`);
+                                _tds[6].textContent = String(_(_whRow, [`库房联系人`, `联系人`], ``) || `-`);
+                                _tds[7].textContent = String(_(_whRow, [`电话`, `联系电话`, `手机`], ``) || `-`);
                             }
                         }
                         break
@@ -1905,8 +1969,9 @@ function nt(e) {
         U(`编辑库房`, qe(), {
             onOpen: async function() {
                 var t = document.getElementById(`warehouse-type-select`),
+                    wc3 = document.getElementById(`warehouse-category-select`),
                     wf = document.getElementById(`warehouse-form`);
-                t && await ltTypes(t, Za(n)), wf && (wf.dataset.wProv = _(n, [`省`, `省份`, `province`], ``) || ``, wf.dataset.wCity = _(n, [`市`, `城市`, `city`], ``) || ``, wf.dataset.wDist = _(n, [`区`, `区县`, `district`, `县`], ``) || ``);
+                t && await ltTypes(t, Za(n)), wc3 && await ltCategories(wc3, v(n, [`大类id`])), wf && (wf.dataset.wProv = _(n, [`省`, `省份`, `province`], ``) || ``, wf.dataset.wCity = _(n, [`市`, `城市`, `city`], ``) || ``, wf.dataset.wDist = _(n, [`区`, `区县`, `district`, `县`], ``) || ``);
                 document.getElementById(`warehouse-name`).value = T(n) || ``;
                 var r = document.getElementById(`warehouse-address`);
                 r && (r.value = Aa(n) || ``);
@@ -2422,9 +2487,11 @@ async function ptTypes() {
                 c = WtSafeCssColor(i && i !== `-` ? String(i).trim() : ``),
                 o = `<span style="display:inline-block;width:22px;height:22px;border-radius:4px;vertical-align:middle;border:1px solid #ccc;background:` + (c || `#e2e8f0`) + `" title="` + M(String(i)) + `"></span> `,
                 s = document.createElement(`tr`);
+            var cn = _(t, [`大类`], ``) || `-`;
             s.innerHTML = `
             <td>` + String(n) + `</td>
             <td>` + M(r || `-`) + `</td>
+            <td>` + M(cn) + `</td>
             <td>` + o + M(i) + `</td>
             <td>` + (a ? `<span class="text-muted">停用</span>` : `<span class="text-success">启用</span>`) + `</td>
             <td>
@@ -2440,13 +2507,16 @@ async function QtType(e) {
     let t = document.getElementById(`wt-type-name`),
         n = t && t.value.trim(),
         r = document.getElementById(`wt-color`),
-        i = r && r.value.trim();
+        i = r && r.value.trim(),
+        _wc = document.getElementById(`wt-category-select`),
+        _wcid = _wc ? parseInt(_wc.value, 10) : NaN;
     if (!n) throw Error(`请填写类型名`);
     i || (i = `#000000`);
     let a = {
         类型名: n,
         颜色配置: i
     };
+    if (!isNaN(_wcid) && _wcid > 0) a.大类id = _wcid; else if (e) a.大类id = null;
     e ? (a.类型id = Number(e), a.is_active = !0, await Api.request(`POST`, `/tl/update_warehouse_type`, a)) : await Api.request(`POST`, `/tl/add_warehouse_type`, a), await ptTypes()
 }
 
@@ -2457,9 +2527,12 @@ function jtType(e) {
         });
         if (!n) throw Error(`未找到该库房类型`);
         U(`编辑库房类型`, $eType(), {
-            onOpen: function() {
+            onOpen: async function() {
                 var t = xa(n);
-                document.getElementById(`wt-type-name`).value = _(n, [`类型名`, `name`, `类型名称`], ``) || ``, document.getElementById(`wt-color`).value = t && t !== `-` ? t : ``, WtWireColorControls()
+                document.getElementById(`wt-type-name`).value = _(n, [`类型名`, `name`, `类型名称`], ``) || ``, document.getElementById(`wt-color`).value = t && t !== `-` ? t : ``;
+                var wc = document.getElementById(`wt-category-select`);
+                wc && await ltCategories(wc, v(n, [`大类id`]));
+                WtWireColorControls()
             },
             onConfirm: function() {
                 return QtType(e)
@@ -2472,6 +2545,87 @@ function jtType(e) {
 async function ItType(e) {
     if (!(!e || !confirm(`确认删除该库房类型？`))) try {
         await Api.request(`DELETE`, `/tl/delete_warehouse_type?type_id=` + encodeURIComponent(e)), await ptTypes()
+    } catch (e) {
+        alert(`删除失败: ` + (e.message || String(e)))
+    }
+}
+async function ltCategories(e, t) {
+    if (!e) return;
+    for (; e.options.length > 1;) e.remove(1);
+    try {
+        let n = await Api.request(`GET`, `/tl/get_warehouse_categories?include_inactive=false`),
+            r = Api.unwrapList(n);
+        r.forEach(function(n) {
+            var r = v(n, [`大类id`, `id`]),
+                i = _(n, [`大类名`, `name`], ``),
+                a = n.is_active === !1 || n.is_active === 0 || n.is_active === `0`;
+            if (r == null || isNaN(r)) return;
+            var o = document.createElement(`option`);
+            o.value = String(r), o.textContent = (a ? `[停用] ` : ``) + String(i || `大类#` + r), t != null && Number(t) === Number(r) && (o.selected = !0), e.appendChild(o)
+        })
+    } catch (t) {
+        console.error(t)
+    }
+}
+async function ptCategories() {
+    let e = document.getElementById(`warehouse-category-table-body`),
+        t = document.getElementById(`warehouse-category-count`);
+    if (!e) return;
+    E(e, 5, `正在加载大类...`);
+    try {
+        let n = await Api.request(`GET`, `/tl/get_warehouse_categories?include_inactive=false`),
+            r = Api.unwrapList(n);
+        e.innerHTML = ``, r.length || D(e, 5, `暂无大类，请点击「新增大类」`), r.forEach(function(t) {
+            var n = v(t, [`大类id`, `id`]),
+                r = _(t, [`大类名`, `name`], ``),
+                a = t.is_active === !1 || t.is_active === 0 || t.is_active === `0`,
+                s = document.createElement(`tr`);
+            s.innerHTML = `
+            <td>` + String(n) + `</td>
+            <td>` + M(r || `-`) + `</td>
+            <td>` + (a ? `<span class="text-muted">停用</span>` : `<span class="text-success">启用</span>`) + `</td>
+            <td>
+                <button type="button" class="btn btn-sm btn-outline wc-edit-btn" data-id="` + String(n) + `">编辑</button>
+                <button type="button" class="btn btn-sm btn-danger wc-del-btn" data-id="` + String(n) + `">删除</button>
+            </td>`, e.appendChild(s)
+        }), t && (t.textContent = String(r.length))
+    } catch (n) {
+        console.error(n), e.innerHTML = ``, D(e, 5, n && n.message ? String(n.message) : `加载失败`)
+    }
+}
+async function QtCategory(e) {
+    let t = document.getElementById(`wc-name`),
+        n = t && t.value.trim();
+    if (!n) throw Error(`请填写大类名`);
+    let a = { 大类名: n };
+    if (e) {
+        a.大类id = Number(e), a.is_active = !0;
+        await Api.request(`POST`, `/tl/update_warehouse_category`, a)
+    } else {
+        await Api.request(`POST`, `/tl/add_warehouse_category`, a)
+    }
+    await ptCategories()
+}
+async function jtCategory(e) {
+    if (!e) return;
+    let t = await Api.request(`GET`, `/tl/get_warehouse_categories?include_inactive=true`),
+        n = Api.unwrapList(t).find(function(t) {
+            return v(t, [`大类id`, `id`]) === Number(e)
+        });
+    if (!n) throw Error(`未找到该大类`);
+    U(`编辑大类`, $eCategory(), {
+        onOpen: function() {
+            var t = document.getElementById(`wc-name`);
+            t && (t.value = _(n, [`大类名`, `name`], ``) || ``)
+        },
+        onConfirm: function() {
+            return QtCategory(e)
+        }
+    })
+}
+async function ItCategory(e) {
+    if (!(!e || !confirm(`确认删除该大类？删除后关联仓库的大类将被清空。`))) try {
+        await Api.request(`DELETE`, `/tl/delete_warehouse_category?category_id=` + encodeURIComponent(e)), await ptCategories()
     } catch (e) {
         alert(`删除失败: ` + (e.message || String(e)))
     }
@@ -2823,6 +2977,7 @@ async function G() {
                         id: w(e),
                         name: T(e),
                         address: Aa(e),
+                        categoryName: _(e, [`大类`], ``) || `-`,
                         typeName: wa(e),
                         color: xa(e),
                         createdAt: x(e),
@@ -2848,6 +3003,7 @@ async function G() {
                 r.innerHTML = `
             <td>${t.id}</td>
             <td>${M(t.name)}</td>
+            <td>${M(t.categoryName)}</td>
             <td>${M(t.typeName)}</td>
             <td>${sw}${M(t.color)}</td>
             <td>${M(t.address||`-`)}</td>
