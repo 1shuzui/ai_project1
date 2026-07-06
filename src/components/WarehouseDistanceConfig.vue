@@ -54,12 +54,14 @@
               <th>库房距离</th>
               <th>阶梯价差</th>
               <th>实际价差</th>
+              <th class="wdc-col-remark">备注</th>
+              <th class="wdc-col-ai">AI分析</th>
               <th class="wdc-col-actions">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="listRows.length === 0">
-              <td colspan="6">暂无数据</td>
+              <td colspan="8">暂无数据</td>
             </tr>
             <template v-for="grp in groupedTableRows" :key="`grp-${grp.rows[0]?.fromId ?? 0}`">
               <tr v-for="(r, idx) in grp.rows" :key="`edge-${r.fromId}-${r.toId}`">
@@ -70,6 +72,32 @@
                 <td class="wdc-td-distance">{{ distanceCellText(r) }}</td>
                 <td class="wdc-td-tier">{{ tierPriceCellText(r) }}</td>
                 <td class="wdc-td-freight">{{ r.realTimeDiff || '—' }}</td>
+                <td class="wdc-td-remark" @click="startEditRemark(r)">
+                  <textarea
+                    v-if="editingRemarkKey === edgeKey(r)"
+                    v-model="editingRemarkText"
+                    class="wdc-remark-textarea"
+                    rows="2"
+                    @blur="saveRemark(r)"
+                    @keydown.escape="cancelEditRemark"
+                    @click.stop
+                  ></textarea>
+                  <span v-else class="wdc-remark-text" :class="{ 'wdc-remark-placeholder': !r.remark }">
+                    {{ r.remark || '点击编辑备注' }}
+                  </span>
+                </td>
+                <td
+                  v-if="r.aiAnalysis"
+                  class="wdc-td-ai"
+                  @click.stop="openAiDetail(r)"
+                >
+                  <div class="wdc-ai-preview">
+                    {{ r.aiAnalysis.slice(0, 40) + (r.aiAnalysis.length > 40 ? '…' : '') }}
+                  </div>
+                </td>
+                <td v-else class="wdc-td-ai">
+                  <span class="wdc-remark-placeholder">—</span>
+                </td>
                 <td v-if="idx === 0" class="wdc-td-ops wdc-col-actions" :rowspan="grp.rows.length">
                   <div class="wdc-ops-merge">
                     <div class="wdc-ops-buttons-row">
@@ -278,6 +306,24 @@
         </div>
       </div>
     </div>
+
+    <!-- AI分析详情弹窗 -->
+    <div v-if="aiDetailOpen" class="wdc-modal-overlay" role="dialog" aria-modal="true" @click.self="closeAiDetail">
+      <div class="wdc-modal wdc-ai-modal">
+        <h3 class="wdc-modal-title">AI分析详情</h3>
+        <div class="wdc-modal-body">
+          <p class="wdc-modal-readonly">
+            <span class="wdc-muted">源库房：</span>{{ aiDetailRow?.fromName }}
+            <span class="wdc-muted" style="margin-left:16px">对标库房：</span>{{ aiDetailRow?.toName }}
+          </p>
+          <div class="wdc-ai-detail-content">{{ aiDetailRow?.aiAnalysis || '暂无分析结果' }}</div>
+        </div>
+        <div class="wdc-modal-footer">
+          <button type="button" class="btn btn-outline-secondary" @click="closeAiDetail">关闭</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -294,6 +340,7 @@ import {
   fetchTlRealtimeSpreadList,
   postTlBatchBindWarehouseLinks,
   postTlBindWarehouseLink,
+  putTlUpdateWarehouseLinkRemark,
   putTlUpdateWarehouseLinkTier,
 } from '../api/tlApi'
 
@@ -310,6 +357,12 @@ type LinkRow = {
   tierPriceEditSeed: string
   /** 实时价差：暂无后端数据，预留字段 */
   realTimeDiff: string | null
+  /** 备注：可内联编辑 */
+  remark: string
+  /** AI分析：只读多行文本 */
+  aiAnalysis: string
+  /** 上次分析时间：只读 YYYY-MM-DD HH:mm:ss */
+  lastAnalysisTime: string
 }
 
 /** 同一源库房的多条出边，用于合并首列与末列 */
@@ -406,6 +459,61 @@ const dialogEditGroup = ref<LinkRowGroup | null>(null)
 
 /** 合并操作列：每个源库房选中的「要修改/删除」的目标库房 id（打开弹窗时沿用） */
 const opTargetToIdByFromId = ref<Record<number, number>>({})
+
+// ── 备注内联编辑 ──
+const editingRemarkKey = ref('')
+const editingRemarkText = ref('')
+
+function startEditRemark(r: LinkRow) {
+  editingRemarkKey.value = edgeKey(r)
+  editingRemarkText.value = r.remark || ''
+  // 等 DOM 更新后自动 focus textarea
+  setTimeout(() => {
+    const ta = document.querySelector<HTMLTextAreaElement>('.wdc-remark-textarea')
+    ta?.focus()
+  }, 0)
+}
+
+async function saveRemark(r: LinkRow) {
+  const text = editingRemarkText.value.trim()
+  const key = editingRemarkKey.value
+  editingRemarkKey.value = ''
+  const original = (r.remark || '').trim()
+  // 未做任何更改，不调接口
+  if (text === original) return
+  const newVal = text || null
+  const target = listRows.value.find((row) => edgeKey(row) === key)
+  try {
+    await putTlUpdateWarehouseLinkRemark({
+      源库房id: r.fromId,
+      对标库房id: r.toId,
+      备注: newVal,
+    })
+    if (target) target.remark = text
+    message.value = '备注已保存'
+  } catch (e) {
+    error.value = formatWdcLoadError(e)
+    // 不影响编辑状态，下次点击再试
+  }
+}
+
+function cancelEditRemark() {
+  editingRemarkKey.value = ''
+}
+
+// ── AI分析弹窗 ──
+const aiDetailRow = ref<LinkRow | null>(null)
+const aiDetailOpen = ref(false)
+
+function openAiDetail(r: LinkRow) {
+  aiDetailRow.value = r
+  aiDetailOpen.value = true
+}
+
+function closeAiDetail() {
+  aiDetailOpen.value = false
+  aiDetailRow.value = null
+}
 
 const dialogTitle = computed(() => {
   if (dialogMode.value === 'add') return '新增绑定'
@@ -770,7 +878,16 @@ function toLinkRow(row: Record<string, unknown>): LinkRow {
 
   const linkId = pickNum(row, ['关联id', 'link_id', 'id'])
 
-  return { linkId, fromId, toId, fromName, toName, tierPriceDiff, tierPriceEditSeed, realTimeDiff: null }
+  const remark = pickStr(row, ['备注', 'remark'])
+  const aiAnalysis = pickStr(row, ['AI分析', 'ai_analysis', 'aiAnalysis'])
+  const lastAnalysisTime = pickStr(row, ['上次分析时间', 'last_analysis_time', 'lastAnalysisTime'])
+
+  return {
+    linkId, fromId, toId, fromName, toName,
+    tierPriceDiff, tierPriceEditSeed,
+    realTimeDiff: null,
+    remark, aiAnalysis, lastAnalysisTime,
+  }
 }
 
 async function loadWarehouses() {
@@ -996,6 +1113,9 @@ async function submitDialog() {
           tierPriceDiff: null,
           tierPriceEditSeed: '',
           realTimeDiff: null,
+          remark: '',
+          aiAnalysis: '',
+          lastAnalysisTime: '',
         })
       }
       closeDialog()
@@ -1022,6 +1142,9 @@ async function submitDialog() {
       target.tierPriceDiff = null
       target.tierPriceEditSeed = ''
       target.realTimeDiff = null
+      target.remark = ''
+      target.aiAnalysis = ''
+      target.lastAnalysisTime = ''
     }
     closeDialog()
   }
@@ -1381,5 +1504,89 @@ onMounted(async () => {
   line-height: 1.5;
   resize: vertical;
   box-sizing: border-box;
+}
+
+/* ── 备注 & AI分析列 ── */
+.wdc-col-remark {
+  min-width: 140px;
+  width: 18%;
+}
+
+.wdc-col-ai {
+  min-width: 160px;
+  width: 22%;
+}
+
+.wdc-td-remark {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.wdc-td-remark:hover {
+  background: #f8fafc;
+}
+
+.wdc-remark-text {
+  display: block;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.wdc-remark-placeholder {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.wdc-remark-textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #3b82f6;
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.wdc-td-ai {
+  cursor: pointer;
+  max-width: 200px;
+  transition: background 0.15s ease;
+}
+
+.wdc-td-ai:hover {
+  background: #f1f5f9;
+}
+
+.wdc-ai-preview {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1e293b;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wdc-ai-detail-content {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.wdc-ai-modal {
+  max-width: 520px;
 }
 </style>

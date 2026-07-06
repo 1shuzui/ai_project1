@@ -2008,6 +2008,9 @@ type SelfPricingLink = {
   distanceText: string
   tierPriceDiff: string
   realTimeDiff: string
+  remark: string
+  aiAnalysis: string
+  lastAnalysisTime: string
 }
 
 type AiSuggestion = {
@@ -2155,8 +2158,15 @@ async function loadSelfPricingLinks() {
         if (v != null && v !== '') { realTimeDiff = String(v); break }
       }
 
+      let remark = ''
+      for (const k of ['备注', 'remark']) { const v = o[k]; if (v != null && v !== '') { remark = String(v); break } }
+      let aiAnalysis = ''
+      for (const k of ['AI分析', 'ai_analysis', 'aiAnalysis']) { const v = o[k]; if (v != null && v !== '') { aiAnalysis = String(v); break } }
+      let lastAnalysisTime = ''
+      for (const k of ['上次分析时间', 'last_analysis_time', 'lastAnalysisTime']) { const v = o[k]; if (v != null && v !== '') { lastAnalysisTime = String(v); break } }
+
       if (toId > 0) {
-        links.push({ fromId: whId, fromName: srcName, toId, toName, distanceText, tierPriceDiff, realTimeDiff })
+        links.push({ fromId: whId, fromName: srcName, toId, toName, distanceText, tierPriceDiff, realTimeDiff, remark, aiAnalysis, lastAnalysisTime })
       }
     }
 

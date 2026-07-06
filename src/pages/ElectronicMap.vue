@@ -813,9 +813,37 @@
             <span class="emap-legend-tri"></span>
             <span>冶炼厂</span>
           </div>
+          <div v-if="warehouseCategoryStats.length" class="emap-legend-stats">
+            <div class="emap-legend-stats-title">
+              大类
+              <span class="emap-legend-stats-total">（共 {{ warehouseCategoryStats.reduce((s, r) => s + r.count, 0) }}）</span>
+            </div>
+            <div
+              v-for="row in warehouseCategoryStats"
+              :key="row.label"
+              class="emap-legend-stat-row"
+              :title="row.label"
+            >
+              <button
+                type="button"
+                class="emap-legend-eye-btn"
+                :title="hiddenWarehouseCategories.has(row.label) ? '显示该大类' : '隐藏该大类'"
+                @click.stop="toggleWarehouseCategoryVisibility(row.label)"
+              >
+                <i
+                  class="bi"
+                  :class="hiddenWarehouseCategories.has(row.label) ? 'bi-eye-slash' : 'bi-eye'"
+                  aria-hidden="true"
+                />
+              </button>
+              <span class="emap-legend-stat-dot emap-legend-stat-dot--cat" />
+              <span class="emap-legend-stat-label">{{ row.label }}</span>
+              <span class="emap-legend-stat-count">{{ row.count }}</span>
+            </div>
+          </div>
           <div v-if="warehouseTypeStats.length" class="emap-legend-stats">
             <div class="emap-legend-stats-title">
-              库房类型数量
+              库房类型
               <span class="emap-legend-stats-total">（共 {{ allWarehousePoints.length }}）</span>
             </div>
             <div
@@ -1044,6 +1072,9 @@ type WarehouseDistanceTableRow = {
   distanceKm: number | null
   tierPriceDiff: string
   realTimeDiff: string
+  remark: string
+  aiAnalysis: string
+  lastAnalysisTime: string
 }
 
 /** 与「送货量预测」折线图弹窗下方展示一致 */
@@ -1604,6 +1635,19 @@ const warehouseTypeStats = computed((): WarehouseTypeStatRow[] => {
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
 })
 
+type WarehouseCategoryStatRow = { label: string; count: number }
+
+const warehouseCategoryStats = computed((): WarehouseCategoryStatRow[] => {
+  const by = new Map<string, number>()
+  for (const p of allWarehousePoints.value) {
+    const label = pickStr(p.raw, ['大类']).trim() || '未分类'
+    by.set(label, (by.get(label) ?? 0) + 1)
+  }
+  return [...by.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
+})
+
 type SmelterTypeStatRow = { label: string; count: number; color: string }
 
 const smelterTypeStats = computed((): SmelterTypeStatRow[] => {
@@ -1621,6 +1665,14 @@ const smelterTypeStats = computed((): SmelterTypeStatRow[] => {
     .map(([label, { count, color }]) => ({ label, count, color }))
     .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
 })
+
+function toggleWarehouseCategoryVisibility(label: string) {
+  const s = new Set(hiddenWarehouseCategories.value)
+  if (s.has(label)) s.delete(label)
+  else s.add(label)
+  hiddenWarehouseCategories.value = s
+  applyWarehouseTypeVisibility()
+}
 
 function toggleWarehouseTypeVisibility(label: string) {
   const s = new Set(hiddenWarehouseTypes.value)
@@ -1651,15 +1703,17 @@ function toggleAllSmeltersVisibility() {
 function applyWarehouseTypeVisibility() {
   const markerLayer = markerLayerRef.value
   if (!markerLayer) return
-  const hidden = hiddenWarehouseTypes.value
+  const hiddenTypes = hiddenWarehouseTypes.value
+  const hiddenCats = hiddenWarehouseCategories.value
   for (const p of allWarehousePoints.value) {
     const m = warehouseMarkerById.get(p.id)
     if (!m) continue
     const typeName =
       pickStr(p.raw, ['类型', 'type', 'warehouse_type_name', '类型名']).trim() || '未分类'
+    const catName = pickStr(p.raw, ['大类']).trim() || '未分类'
     const markerLatLng = m.getLatLng()
     const isOnMap = markerLatLng != null && mapRef.value?.hasLayer(m)
-    if (allWarehousesHidden.value || hidden.has(typeName)) {
+    if (allWarehousesHidden.value || hiddenTypes.has(typeName) || hiddenCats.has(catName)) {
       if (isOnMap) m.remove()
     } else {
       if (!isOnMap) m.addTo(markerLayer)
@@ -1728,6 +1782,8 @@ function onEmapFullscreenChange() {
   void nextTick(() => mapRef.value?.invalidateSize())
 }
 const allSmelterPoints = ref<MapPoint[]>([])
+/** 隐藏的库房大类集合 */
+const hiddenWarehouseCategories = ref<Set<string>>(new Set())
 /** 隐藏的库房类型标签集合 */
 const hiddenWarehouseTypes = ref<Set<string>>(new Set())
 /** 隐藏的冶炼厂类型标签集合 */
@@ -4765,6 +4821,9 @@ async function buildWarehouseDistanceTableRows(
         distanceKm,
         tierPriceDiff: tierByTargetId.get(tid) ?? formatWarehouseLinkTierDisplay(linkRow),
         realTimeDiff: spreadByTargetId.get(tid) ?? '—',
+        remark: pickStr(linkRow, ['备注', 'remark']),
+        aiAnalysis: pickStr(linkRow, ['AI分析', 'ai_analysis', 'aiAnalysis']),
+        lastAnalysisTime: pickStr(linkRow, ['上次分析时间', 'last_analysis_time', 'lastAnalysisTime']),
       }
     }),
   )
@@ -7737,6 +7796,13 @@ onBeforeUnmount(() => {
   transform: rotate(-45deg);
   border: 1px solid rgba(255, 255, 255, 0.35);
   flex-shrink: 0;
+}
+
+.emap-legend-stat-dot--cat {
+  border-radius: 50%;
+  transform: none;
+  background: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.5);
 }
 
 .emap-legend-stat-label {

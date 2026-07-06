@@ -743,6 +743,24 @@ export async function fetchWarehouseAiAnalysis(warehouseId: number): Promise<Rec
   return { data: raw }
 }
 
+/**
+ * PUT /tl/update_warehouse_link_remark
+ * 更新库房关联边备注（内联编辑）。传 null 清空。
+ */
+export async function putTlUpdateWarehouseLinkRemark(payload: {
+  源库房id: number
+  对标库房id: number
+  备注: string | null
+}): Promise<unknown> {
+  const raw = await tlPutJson('/tl/update_warehouse_link_remark', {
+    源库房id: payload.源库房id,
+    对标库房id: payload.对标库房id,
+    备注: payload.备注,
+  })
+  assertTlBizCode200(raw, '更新备注')
+  return raw
+}
+
 /** GET /tl/get_link_realtime_spread_list — 获取库房关联实时价差 */
 export async function fetchTlRealtimeSpreadList(params?: {
   warehouse_id?: number
