@@ -813,63 +813,73 @@
             <span class="emap-legend-tri"></span>
             <span>冶炼厂</span>
           </div>
-          <div v-if="warehouseCategoryStats.length" class="emap-legend-stats">
-            <div class="emap-legend-stats-title">
-              大类
-              <span class="emap-legend-stats-total">（共 {{ warehouseCategoryStats.reduce((s, r) => s + r.count, 0) }}）</span>
-            </div>
-            <div
-              v-for="row in warehouseCategoryStats"
-              :key="row.label"
-              class="emap-legend-stat-row"
-              :title="row.label"
-            >
-              <button
-                type="button"
-                class="emap-legend-eye-btn"
-                :title="hiddenWarehouseCategories.has(row.label) ? '显示该大类' : '隐藏该大类'"
-                @click.stop="toggleWarehouseCategoryVisibility(row.label)"
-              >
-                <i
-                  class="bi"
-                  :class="hiddenWarehouseCategories.has(row.label) ? 'bi-eye-slash' : 'bi-eye'"
-                  aria-hidden="true"
-                />
-              </button>
-              <span class="emap-legend-stat-dot emap-legend-stat-dot--cat" />
-              <span class="emap-legend-stat-label">{{ row.label }}</span>
-              <span class="emap-legend-stat-count">{{ row.count }}</span>
-            </div>
-          </div>
-          <div v-if="warehouseTypeStats.length" class="emap-legend-stats">
+          <div v-if="warehouseCategoryTypeGroups.length" class="emap-legend-stats">
             <div class="emap-legend-stats-title">
               库房类型
               <span class="emap-legend-stats-total">（共 {{ allWarehousePoints.length }}）</span>
             </div>
             <div
-              v-for="row in warehouseTypeStats"
-              :key="row.label"
-              class="emap-legend-stat-row"
-              :title="row.label"
+              v-for="grp in warehouseCategoryTypeGroups"
+              :key="grp.category"
+              class="emap-legend-cat-group"
             >
-              <button
-                type="button"
-                class="emap-legend-eye-btn"
-                :title="hiddenWarehouseTypes.has(row.label) ? '显示该类型' : '隐藏该类型'"
-                @click.stop="toggleWarehouseTypeVisibility(row.label)"
+              <div class="emap-legend-cat-header">
+                <button
+                  type="button"
+                  class="emap-legend-eye-btn"
+                  :title="hiddenWarehouseCategories.has(grp.category) ? '显示该大类' : '隐藏该大类'"
+                  @click.stop="toggleWarehouseCategoryVisibility(grp.category)"
+                >
+                  <i
+                    class="bi"
+                    :class="hiddenWarehouseCategories.has(grp.category) ? 'bi-eye-slash' : 'bi-eye'"
+                    aria-hidden="true"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="emap-legend-cat-toggle"
+                  @click.stop="toggleCategoryCollapse(grp.category)"
+                >
+                  <i
+                    class="bi emap-legend-cat-chevron"
+                    :class="collapsedCategories.has(grp.category) ? 'bi-chevron-right' : 'bi-chevron-down'"
+                    aria-hidden="true"
+                  />
+                  <span class="emap-legend-cat-label">{{ grp.category }}</span>
+                  <span class="emap-legend-cat-count">{{ grp.totalCount }}</span>
+                </button>
+              </div>
+              <div
+                v-if="!collapsedCategories.has(grp.category)"
+                class="emap-legend-cat-types"
               >
-                <i
-                  class="bi"
-                  :class="hiddenWarehouseTypes.has(row.label) ? 'bi-eye-slash' : 'bi-eye'"
-                  aria-hidden="true"
-                />
-              </button>
-              <span
-                class="emap-legend-stat-dot"
-                :style="{ background: row.color, boxShadow: `0 0 6px ${row.color}88` }"
-              />
-              <span class="emap-legend-stat-label">{{ row.label }}</span>
-              <span class="emap-legend-stat-count">{{ row.count }}</span>
+                <div
+                  v-for="row in grp.types"
+                  :key="row.label"
+                  class="emap-legend-stat-row"
+                  :title="row.label"
+                >
+                  <button
+                    type="button"
+                    class="emap-legend-eye-btn"
+                    :title="hiddenWarehouseTypes.has(row.label) ? '显示该类型' : '隐藏该类型'"
+                    @click.stop="toggleWarehouseTypeVisibility(row.label)"
+                  >
+                    <i
+                      class="bi"
+                      :class="hiddenWarehouseTypes.has(row.label) ? 'bi-eye-slash' : 'bi-eye'"
+                      aria-hidden="true"
+                    />
+                  </button>
+                  <span
+                    class="emap-legend-stat-dot"
+                    :style="{ background: row.color, boxShadow: `0 0 6px ${row.color}88` }"
+                  />
+                  <span class="emap-legend-stat-label">{{ row.label }}</span>
+                  <span class="emap-legend-stat-count">{{ row.count }}</span>
+                </div>
+              </div>
             </div>
           </div>
           <div v-if="smelterTypeStats.length" class="emap-legend-stats">
@@ -1619,34 +1629,46 @@ const receiptPriceDateCache = ref<Map<string, string>>(new Map())
 
 type WarehouseTypeStatRow = { label: string; count: number; color: string }
 
-const warehouseTypeStats = computed((): WarehouseTypeStatRow[] => {
-  const by = new Map<string, { count: number; color: string }>()
+type WarehouseCategoryTypeGroup = {
+  category: string
+  types: WarehouseTypeStatRow[]
+  totalCount: number
+}
+
+/** 按大类分组的库房类型，用于图例折叠筛选 */
+const warehouseCategoryTypeGroups = computed((): WarehouseCategoryTypeGroup[] => {
+  const byCat = new Map<string, Map<string, { count: number; color: string }>>()
   for (const p of allWarehousePoints.value) {
-    const row = p.raw
-    const label =
-      pickStr(row, ['类型', 'type', 'warehouse_type_name', '类型名']).trim() || '未分类'
+    const cat = pickStr(p.raw, ['大类']).trim() || '未分类'
+    const type =
+      pickStr(p.raw, ['类型', 'type', 'warehouse_type_name', '类型名']).trim() || '未分类'
     const color = p.pinColor ?? DEFAULT_WAREHOUSE_COLOR
-    const cur = by.get(label)
-    if (!cur) by.set(label, { count: 1, color })
+    let typeMap = byCat.get(cat)
+    if (!typeMap) { typeMap = new Map(); byCat.set(cat, typeMap) }
+    const cur = typeMap.get(type)
+    if (!cur) typeMap.set(type, { count: 1, color })
     else cur.count += 1
   }
-  return [...by.entries()]
-    .map(([label, { count, color }]) => ({ label, count, color }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
+  return [...byCat.entries()]
+    .map(([category, typeMap]) => {
+      const types: WarehouseTypeStatRow[] = [...typeMap.entries()]
+        .map(([label, { count, color }]) => ({ label, count, color }))
+        .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
+      const totalCount = types.reduce((s, t) => s + t.count, 0)
+      return { category, types, totalCount }
+    })
+    .sort((a, b) => b.totalCount - a.totalCount || a.category.localeCompare(b.category, 'zh-CN'))
 })
 
-type WarehouseCategoryStatRow = { label: string; count: number }
+/** 折叠的大类集合 */
+const collapsedCategories = ref<Set<string>>(new Set())
 
-const warehouseCategoryStats = computed((): WarehouseCategoryStatRow[] => {
-  const by = new Map<string, number>()
-  for (const p of allWarehousePoints.value) {
-    const label = pickStr(p.raw, ['大类']).trim() || '未分类'
-    by.set(label, (by.get(label) ?? 0) + 1)
-  }
-  return [...by.entries()]
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh-CN'))
-})
+function toggleCategoryCollapse(category: string) {
+  const s = new Set(collapsedCategories.value)
+  if (s.has(category)) s.delete(category)
+  else s.add(category)
+  collapsedCategories.value = s
+}
 
 type SmelterTypeStatRow = { label: string; count: number; color: string }
 
@@ -1782,10 +1804,10 @@ function onEmapFullscreenChange() {
   void nextTick(() => mapRef.value?.invalidateSize())
 }
 const allSmelterPoints = ref<MapPoint[]>([])
-/** 隐藏的库房大类集合 */
-const hiddenWarehouseCategories = ref<Set<string>>(new Set())
 /** 隐藏的库房类型标签集合 */
 const hiddenWarehouseTypes = ref<Set<string>>(new Set())
+/** 隐藏的库房大类集合 */
+const hiddenWarehouseCategories = ref<Set<string>>(new Set())
 /** 隐藏的冶炼厂类型标签集合 */
 const hiddenSmelterTypes = ref<Set<string>>(new Set())
 /** 隐藏全部库房 / 冶炼厂打点 */
@@ -7815,6 +7837,98 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   color: #f1f5f9;
+}
+
+/* ── 大类分组折叠 ── */
+.emap-legend-cat-group {
+  margin-top: 2px;
+}
+
+.emap-legend-cat-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(34, 211, 238, 0.08);
+  border-radius: 5px;
+  padding: 0 4px 0 2px;
+  transition: background 0.15s;
+}
+
+.emap-legend-cat-header:hover {
+  background: rgba(34, 211, 238, 0.16);
+}
+
+.emap-legend-cat-header .emap-legend-eye-btn {
+  flex-shrink: 0;
+}
+
+.emap-legend-cat-toggle {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: left;
+}
+
+.emap-legend-cat-toggle:hover {
+  color: #cbd5e1;
+}
+
+.emap-legend-cat-chevron {
+  font-size: 10px;
+  justify-self: center;
+}
+
+.emap-legend-cat-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.emap-legend-cat-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #7dd3fc;
+  font-size: 10px;
+}
+
+.emap-legend-cat-types {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 0 3px 10px;
+}
+
+/* ── 图例滚动条美化 ── */
+.emap-legend-stats {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+
+.emap-legend-stats::-webkit-scrollbar {
+  width: 4px;
+}
+
+.emap-legend-stats::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.emap-legend-stats::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
+}
+
+.emap-legend-stats::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
 }
 
 .emap-fs-btn {
