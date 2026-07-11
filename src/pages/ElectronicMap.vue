@@ -502,6 +502,25 @@
             </table>
           </div>
         </div>
+        <!-- 冶炼厂类型比价 Tab 切换 -->
+        <div v-if="!comparisonSectionCollapsed && !warehouseDistanceMonitorOn" class="emap-cmp-type-tabs">
+          <button
+            type="button"
+            class="emap-cmp-type-tab"
+            :class="{ active: comparisonSmelterTypeTab === '铅酸电池' }"
+            @click="comparisonSmelterTypeTab = '铅酸电池'"
+          >
+            铅酸电池比价预测
+          </button>
+          <button
+            type="button"
+            class="emap-cmp-type-tab"
+            :class="{ active: comparisonSmelterTypeTab === '锂电电池' }"
+            @click="comparisonSmelterTypeTab = '锂电电池'"
+          >
+            锂电电池比价预测
+          </button>
+        </div>
         <div v-if="!comparisonSectionCollapsed && !warehouseDistanceMonitorOn" class="emap-cmp-summary">
           <div class="emap-cmp-summary-card">
             <div class="emap-cmp-summary-label">最优方案</div>
@@ -533,13 +552,13 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-if="!comparisonRanks.length">
+              <tr v-if="!filteredComparisonRanks.length">
                 <td colspan="10" class="text-center text-muted py-3 emap-cmp-table-empty">
                   暂无比价明细
                 </td>
               </tr>
               <tr
-                v-for="row in comparisonRanks"
+                v-for="row in filteredComparisonRanks"
                 :key="`${row.rank}-${row.smelter}-${row.xunRongBaoExcludedPricing ? 'ex' : 'in'}`"
               >
                 <td class="emap-cmp-col-rank">
@@ -1072,6 +1091,10 @@ type ComparisonRankItem = {
   xunRongBaoSurchargeYuanPerTon?: number | null
   /** 与上一行同厂：本行为「不含循融宝」口径，不显示排名角标「循」 */
   xunRongBaoExcludedPricing?: boolean
+  /** 冶炼厂类型名（如「再生冶炼厂」「锂电电池」），用于比价表 tab 筛选 */
+  smelterType?: string
+  /** 冶炼厂数字 id，用于从地图点位精确查找类型 */
+  smelterNumericId?: number | null
 }
 
 /** 左侧「库房距离监测」表格行 */
@@ -1621,6 +1644,8 @@ const confirmedCategoryIds = ref<number[]>([])
 const confirmedTotalTons = ref(0)
 const confirmedPriceMode = ref<'base' | 'tax3'>('base')
 const comparisonRanks = ref<ComparisonRankItem[]>([])
+/** 比价表冶炼厂类型 tab：铅酸电池 / 锂电电池 */
+const comparisonSmelterTypeTab = ref<'铅酸电池' | '锂电电池'>('铅酸电池')
 const lastComparisonSortKey = ref('')
 const allWarehousePoints = ref<MapPoint[]>([])
 
@@ -3941,6 +3966,7 @@ function buildExcludedComparisonRankFromDetails(
   return {
     rank: base.rank,
     smelter: base.smelter,
+    smelterNumericId: base.smelterNumericId,
     unitPrice: toDisplayNum(unitPrice),
     netProfit: toDisplayNum(netProfit),
     totalRecovery: toDisplayNum(totalRecovery),
@@ -4332,6 +4358,7 @@ function parseSmelterProfitRankArray(
     out.push({
       rank,
       smelter,
+      smelterNumericId: pickNumber(row, ['冶炼厂id', 'factory_id', 'smelter_id', 'id', 'smelter_id_num']),
       unitPrice: toDisplayNum(unitPrice),
       netProfit: toDisplayNum(netProfit ?? 0),
       totalRecovery: toDisplayNum(totalRecovery),
@@ -4526,6 +4553,7 @@ function parseRankRowsLoose(
     out.push({
       rank,
       smelter,
+      smelterNumericId: pickNumber(row, ['冶炼厂id', 'factory_id', 'smelter_id', 'id', 'smelter_id_num']),
       unitPrice: toDisplayNum(unitPrice),
       netProfit: toDisplayNum(netProfit),
       totalRecovery: toDisplayNum(totalRecovery),
@@ -4600,6 +4628,7 @@ function aggregateComparisonRows(
     string,
     {
       smelter: string
+      smelterNumericId: number | null
       materialSum: number
       freightSum: number
       freightCount: number
@@ -4635,6 +4664,7 @@ function aggregateComparisonRows(
     if (!grouped.has(key)) {
       grouped.set(key, {
         smelter,
+        smelterNumericId: null,
         materialSum: 0,
         freightSum: 0,
         freightCount: 0,
@@ -4650,6 +4680,10 @@ function aggregateComparisonRows(
       })
     }
     const g = grouped.get(key)!
+    // 从第一条明细行提取冶炼厂数字 id，供后续精确查找类型
+    if (g.smelterNumericId == null) {
+      g.smelterNumericId = pickNumber(row, ['冶炼厂id', 'factory_id', 'smelter_id', 'smelter_id_num'])
+    }
     const cat = pickStr(row, ['品类', 'category', '品种', '产品品种', 'category_name']) || '—'
     const upLine = pickDetailUnitPrice(row, priceMode)
     g.categoryPrices[cat] = upLine != null && Number.isFinite(upLine) ? upLine : null
@@ -4703,6 +4737,7 @@ function aggregateComparisonRows(
       const unitPrice = g.qtySum > 0 ? totalGoods / g.qtySum : 0
       return {
         smelter: g.smelter,
+        smelterNumericId: g.smelterNumericId,
         unitPrice: toDisplayNum(unitPrice),
         netProfit: toDisplayNum(netProfit),
         totalRecovery: toDisplayNum(totalGoods),
@@ -4736,6 +4771,41 @@ function findSmelterPoint(name: string): MapPoint | null {
     (x) => x.title.includes(name) || name.includes(x.title),
   )
   return loose ?? null
+}
+
+/** 根据冶炼厂名称/ID 查找其类型标签（如「再生冶炼厂」「锂电电池」） */
+function getSmelterType(row: ComparisonRankItem): string {
+  // 1. 优先用冶炼厂数字 id 精确查找（最可靠）
+  if (row.smelterNumericId != null && Number.isFinite(row.smelterNumericId)) {
+    for (const p of allSmelterPoints.value) {
+      const raw = p.raw
+      const pid = pickNumber(raw, ['冶炼厂id', 'factory_id', 'smelter_id', 'id', 'smelter_id_num'])
+      if (pid != null && pid === row.smelterNumericId) {
+        const t = pickStr(raw, ['冶炼厂类型', 'factory_type', 'smelter_type', '冶炼厂类型名']).trim()
+        if (t) return t
+      }
+    }
+  }
+  // 2. 用名称精确匹配
+  const name = row.smelter.trim()
+  if (name) {
+    for (const p of allSmelterPoints.value) {
+      const raw = p.raw
+      // 尝试多种名称字段，优先精确匹配
+      const names = [
+        pickStr(raw, ['冶炼厂名', 'factory_name', 'name', '冶炼厂', '厂名', 'title']).trim(),
+        pickStr(raw, ['smelter_name']).trim(),
+      ]
+      for (const cn of names) {
+        if (!cn) continue
+        if (cn === name) {
+          const t = pickStr(raw, ['冶炼厂类型', 'factory_type', 'smelter_type', '冶炼厂类型名']).trim()
+          if (t) return t
+        }
+      }
+    }
+  }
+  return '未分类'
 }
 
 function findWarehousePointByNumericId(wid: number): MapPoint | null {
@@ -5266,7 +5336,13 @@ async function runComparisonForWarehouse(warehouse: MapPoint, options?: RunCompa
       sortKey != null && String(sortKey).trim() !== '' ? String(sortKey).trim() : ''
     const detailRows = tlUnwrapComparisonDetails(raw)
     const ranks = rankingsFromComparisonResponse(raw, detailRows, comparisonType.value)
+    // 为每条排行补充冶炼厂类型，供比价表 tab 筛选
+    for (const r of ranks) {
+      r.smelterType = getSmelterType(r)
+    }
     comparisonRanks.value = ranks
+    // 新比价默认展示铅酸电池 tab
+    comparisonSmelterTypeTab.value = '铅酸电池'
     if (ranks.length) {
       renderComparisonOverlay(warehouse, ranks)
     } else {
@@ -5375,8 +5451,21 @@ function toForecastDetailRow(r: PredictResultRow): ForecastDetailRow {
   }
 }
 
+/** 按冶炼厂类型筛选后的比价排行（供比价表 tab 切换），每个 tab 内按利润降序从 1 重新编号 */
+const filteredComparisonRanks = computed(() => {
+  const tab = comparisonSmelterTypeTab.value
+  let filtered = comparisonRanks.value.filter((r) => {
+    const t = (r.smelterType || '').trim()
+    if (tab === '铅酸电池') return t.includes('再生') || t.includes('铅')
+    return t.includes('锂电')
+  })
+  // 按利润降序重新编号，每个 tab 排名从 1 开始
+  const sorted = [...filtered].sort((a, b) => b.netProfit - a.netProfit)
+  return sorted.map((r, idx) => ({ ...r, rank: idx + 1 }))
+})
+
 const comparisonSummary = computed(() => {
-  const sorted = [...comparisonRanks.value].sort((a, b) => a.rank - b.rank)
+  const sorted = [...filteredComparisonRanks.value].sort((a, b) => a.rank - b.rank)
   const first = sorted[0]
   const second = sorted[1]
   const bestProfit = first?.netProfit ?? 0
@@ -7134,9 +7223,45 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* 比价表冶炼厂类型 Tab 切换 */
+.emap-cmp-type-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 10px;
+  border: 1px solid rgba(34, 211, 238, 0.25);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.emap-cmp-type-tab {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  border: none;
+  background: rgba(15, 23, 42, 0.85);
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  position: relative;
+}
+.emap-cmp-type-tab:first-child {
+  border-right: 1px solid rgba(34, 211, 238, 0.15);
+}
+.emap-cmp-type-tab:hover {
+  background: rgba(34, 211, 238, 0.08);
+  color: #cbd5e1;
+}
+.emap-cmp-type-tab.active {
+  background: rgba(34, 211, 238, 0.18);
+  color: #22d3ee;
+  box-shadow: inset 0 -2px 0 #22d3ee;
+}
+
 .emap-cmp-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 10px;
 }
