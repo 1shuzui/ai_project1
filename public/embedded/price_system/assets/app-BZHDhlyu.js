@@ -283,7 +283,7 @@ function w(e) {
 
 function T(e) {
     var t = String(_(e, [`仓库名`, `仓库`, `name`, `warehouse_name`, `warehouseName`], ``));
-    return t.replace(/[（(][^）)]*[）)]\s*$/u, ``).trim()
+    return t.trim()
 }
 
 function E(e, t, n) {

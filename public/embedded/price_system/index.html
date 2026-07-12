@@ -658,6 +658,18 @@
           return (h?.textContent || '').trim()
         }
 
+        /** 从当前可见弹窗中取标题（仓库/冶炼厂通用） */
+        function getActiveModalTitle() {
+          const formEl =
+            document.getElementById('warehouse-name') ||
+            document.getElementById('smelter-name')
+          if (!formEl) return ''
+          const overlay = formEl.closest('.modal-overlay')
+          if (!overlay) return ''
+          const titleEl = overlay.querySelector('#modal-title')
+          return (titleEl?.textContent || '').trim()
+        }
+
         function qWhRegion(id) {
           const form = getWarehouseFormEl()
           return form ? form.querySelector(`#${id}`) : document.getElementById(id)
@@ -1314,7 +1326,7 @@
         }
 
         async function handleCustomSave() {
-          const title = getWarehouseModalTitle() || (document.getElementById('modal-title')?.textContent || '').trim()
+          const title = getActiveModalTitle() || getWarehouseModalTitle()
           const hasSmelterForm = !!document.getElementById('smelter-name')
           const hasWarehouseForm = !!getActiveWarehouseModalOverlay()
           if (!(title || hasSmelterForm || hasWarehouseForm)) {
@@ -1428,6 +1440,14 @@
               !isAddWarehouseTitle &&
               !/库房类型|类型维护/.test(title)
             const editing = isEditWarehouseTitle && Number.isFinite(widResolved) && widResolved > 0
+            console.log('[wh-save]', {
+              title, hasWarehouseForm, isAddWarehouseTitle, isEditWarehouseTitle,
+              widFromState, widFromDataset, widResolved, editing,
+              name,
+            })
+            if (!editing && isEditWarehouseTitle) {
+              console.warn('[wh-save] 仓库编辑未能解析 ID，将尝试 /tl/add_warehouse')
+            }
             const readWarehouseOptNum = (id) => {
               const raw = (document.getElementById(id)?.value || '').trim()
               if (raw === '') return null
@@ -1545,7 +1565,7 @@
         )
 
         const mo = new MutationObserver((mutations) => {
-          const title = getWarehouseModalTitle()
+          const title = getActiveModalTitle() || getWarehouseModalTitle()
           const hasSmelterForm = !!document.getElementById('smelter-name')
           const hasWarehouseForm = !!getActiveWarehouseModalOverlay()
           const wf = getWarehouseFormEl()
