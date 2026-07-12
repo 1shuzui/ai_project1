@@ -4457,7 +4457,7 @@ async function co() {
     typeof window < `u` && window.location.protocol === `https:` && n && /^http:\/\//i.test(n) && (console.warn(`[API] 当前页为 HTTPS，已忽略 HTTP 接口根地址（含 index 预设与构建变量），改用同域 /tl、/auth:`, n), n = ``), window.API_CONFIG = Object.assign({}, t, {
         baseUrl: n,
         apiPathPrefix: so(n)
-    }), await ro(() => import(`./api-BRt2-jgj.js`), []), qa($a).mount(`#shell`), await ro(() => import(`./app-BZHDhlyu.js`), [])
+    }), await ro(() => import(`./api-BRt2-jgj.js`), []), qa($a).mount(`#shell`), await ro(() => import(`./app-a52e4fdf.js`), [])
 }
 co();
 export {
