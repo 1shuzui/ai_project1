@@ -522,7 +522,7 @@ const filteredVarietyOptions = ref<string[]>([])
 const varietyNameToAllNames = ref<Map<string, string[]>>(new Map())
 
 /** 与电子地图/比价系统一致的 10 个固定回收品类 */
-const FIXED_CATEGORY_IDS: readonly number[] = [6, 4, 15, 11, 16, 2, 5, 17, 12, 3]
+const FIXED_CATEGORY_IDS: readonly number[] = [6, 4, 15, 11, 16, 2, 5, 17, 12, 3, 29]
 
 // 标签预览常量
 const MULTI_PREVIEW_TAG_COUNT = 1

@@ -1322,7 +1322,7 @@ const categoriesError = ref('')
  * 仅以列表为准筛选接口返回项并排序；接口若缺少某 id 则不展示该行。
  */
 const EMAP_FIXED_CATEGORY_ORDER: readonly TlCategoryRow[] = [
-  { id: 6, name: '电动车电池' },
+  { id: 6, name: '锂电池电瓶' },
   { id: 4, name: '黑皮电瓶' },
   { id: 15, name: '管式电瓶' },
   { id: 11, name: '大白电池' },
@@ -1332,6 +1332,7 @@ const EMAP_FIXED_CATEGORY_ORDER: readonly TlCategoryRow[] = [
   { id: 17, name: 'AGM电瓶' },
   { id: 12, name: '电轿电瓶' },
   { id: 3, name: '小四斤电瓶' },
+  { id: 29, name: '锰酸锂' },
 ]
 
 function pickCategoryDisplayName(rawName: string): string {
