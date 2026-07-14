@@ -78,6 +78,49 @@ function httpFailMessage(status: number, rawBody: string): string {
   return `HTTP ${status}`
 }
 
+export class DetectionApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'DetectionApiError'
+    this.status = status
+  }
+}
+
+export class V3PollingError extends Error {
+  readonly kind: 'failed' | 'timeout' | 'unknown_status'
+  readonly retryable: boolean
+  readonly taskId: string
+
+  constructor(
+    kind: 'failed' | 'timeout' | 'unknown_status',
+    message: string,
+    taskId: string,
+    retryable: boolean,
+  ) {
+    super(message)
+    this.name = 'V3PollingError'
+    this.kind = kind
+    this.taskId = taskId
+    this.retryable = retryable
+  }
+}
+
+export function isRetryableDetectionError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return false
+  if (error instanceof V3PollingError) return error.retryable
+  if (error instanceof DetectionApiError) {
+    return [408, 409, 425, 429, 500, 502, 503, 504].includes(error.status)
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return /超时|暂时无法连接|网络|network|failed to fetch|fetch failed|502|503|504|timeout|timed out|任务不存在|任务丢失|not found|Task not found/i.test(message)
+}
+
+function throwHttpError(status: number, rawBody: string): never {
+  throw new DetectionApiError(status, httpFailMessage(status, rawBody))
+}
+
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null && !Array.isArray(x)
 }
@@ -722,7 +765,53 @@ export async function submitV3Detect(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
+  }
+  const json: unknown = await res.json()
+  return normalizeV3SubmitJson(json)
+}
+
+export async function submitV3Upload(
+  file: File,
+  opts?: DetectSubmitOpts,
+): Promise<V3SubmitBody> {
+  const fd = new FormData()
+  fd.append('file', file)
+  appendImageCreatedAt(fd, opts?.image_created_at)
+  appendBatch(fd, opts?.batch)
+  const res = await fetch(aiDetectionUrl('/api/v3/upload'), {
+    method: 'POST',
+    body: fd,
+    signal: opts?.signal,
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throwHttpError(res.status, t)
+  }
+  const json: unknown = await res.json()
+  return normalizeV3SubmitJson(json)
+}
+
+export async function submitV3DetectTask(
+  taskId: string,
+  bbox?: BboxXYXY | null,
+  opts?: DetectSubmitOpts,
+): Promise<V3SubmitBody> {
+  const fd = new FormData()
+  fd.append('task_id', taskId)
+  if (bbox != null) fd.append('bbox', JSON.stringify(bbox))
+  appendDocumentTime(fd, opts?.document_time)
+  appendImageCreatedAt(fd, opts?.image_created_at)
+  appendBatch(fd, opts?.batch)
+  if (opts?.with_rule_checks) fd.append('with_rule_checks', 'true')
+  const res = await fetch(aiDetectionUrl('/api/v3/detect'), {
+    method: 'POST',
+    body: fd,
+    signal: opts?.signal,
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return normalizeV3SubmitJson(json)
@@ -817,7 +906,7 @@ export async function submitV1ImageDetectSync(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return normalizeV1SyncJson(json)
@@ -932,7 +1021,7 @@ export async function getV3Result(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return normalizeV3PollJson(json)
@@ -945,38 +1034,41 @@ export async function pollV3UntilComplete(
     signal?: AbortSignal
     intervalMs?: number
     maxAttempts?: number
+    maxDurationMs?: number
     onPoll?: (status: string, attempt: number) => void
   },
 ): Promise<V3PollBody> {
   const intervalMs = opts?.intervalMs ?? 2000
   const maxAttempts = opts?.maxAttempts ?? 90
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const deadline = opts?.maxDurationMs != null ? Date.now() + opts.maxDurationMs : null
+  for (let attempt = 1; ; attempt++) {
     if (opts?.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const data = await getV3Result(taskId, { signal: opts?.signal })
     const st = (data.status || '').toUpperCase()
     opts?.onPoll?.(st, attempt)
     if (st === 'FAILED') {
-      throw new Error(data.error_msg?.trim() || '检测失败')
+      const message = data.error_msg?.trim() || '检测失败'
+      throw new V3PollingError('failed', message, taskId, isRetryableDetectionError(new Error(message)))
     }
     if (st === 'COMPLETED') return data
     if (st !== 'PENDING' && st !== 'PROCESSING' && st) {
-      throw new Error(`未知任务状态：${data.status}`)
+      throw new V3PollingError('unknown_status', `未知任务状态：${data.status}`, taskId, false)
     }
-    if (attempt < maxAttempts) {
-      await new Promise<void>((resolve, reject) => {
-        const t = setTimeout(resolve, intervalMs)
-        opts?.signal?.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(t)
-            reject(new DOMException('Aborted', 'AbortError'))
-          },
-          { once: true },
-        )
-      })
-    }
+    const hasMoreAttempts = deadline != null ? Date.now() + intervalMs <= deadline : attempt < maxAttempts
+    if (!hasMoreAttempts) break
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, intervalMs)
+      opts?.signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(t)
+          reject(new DOMException('Aborted', 'AbortError'))
+        },
+        { once: true },
+      )
+    })
   }
-  throw new Error('检测超时，请稍后在历史记录中查看结果')
+  throw new V3PollingError('timeout', '检测超时，请稍后在历史记录中查看结果', taskId, true)
 }
 
 export async function getVisualizationBlob(taskId: string): Promise<Blob> {
@@ -1019,7 +1111,7 @@ export async function deleteV3Task(taskId: string): Promise<void> {
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
 }
 
@@ -1521,7 +1613,7 @@ async function postRuleCheckMultipart(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return normalizeRuleChecksJson(json)
@@ -1536,6 +1628,30 @@ export async function submitRuleChecks(
   const fields: Record<string, string | undefined> = {}
   if (bbox != null) fields.bbox = JSON.stringify(bbox)
   return postRuleCheckMultipart('/api/v1/rule-checks', file, fields, opts)
+}
+
+export async function submitRuleChecksFromTask(
+  taskId: string,
+  bbox?: BboxXYXY | null,
+  opts?: RuleCheckSubmitOpts,
+): Promise<RuleChecksData> {
+  const fd = new FormData()
+  fd.append('task_id', taskId)
+  if (bbox != null) fd.append('bbox', JSON.stringify(bbox))
+  appendDocumentTime(fd, opts?.document_time)
+  appendImageCreatedAt(fd, opts?.image_created_at)
+  appendBatch(fd, opts?.batch)
+  const res = await fetch(aiDetectionUrl('/api/v1/rule-checks/from-task'), {
+    method: 'POST',
+    body: fd,
+    signal: opts?.signal,
+  })
+  if (!res.ok) {
+    const t = await res.text()
+    throwHttpError(res.status, t)
+  }
+  const json: unknown = await res.json()
+  return normalizeRuleChecksJson(json)
 }
 
 /** 仅 ROI 像素重叠 */
@@ -1557,7 +1673,7 @@ export async function submitPixelOverlapCheck(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return ruleCheckDataLayer(json) as RuleChecksPixelOverlap
@@ -1580,7 +1696,7 @@ export async function submitTimestampCheck(
   })
   if (!res.ok) {
     const t = await res.text()
-    throw new Error(httpFailMessage(res.status, t))
+    throwHttpError(res.status, t)
   }
   const json: unknown = await res.json()
   return ruleCheckDataLayer(json) as RuleChecksTimestamp

@@ -15,12 +15,16 @@ import {
   fetchTrainingDatasetEntries,
   getV3Result,
   getVisualizationBlob,
+  isRetryableDetectionError,
   pollV3UntilComplete,
   reloadModels,
   submitFeedback,
   submitRuleChecks,
+  submitRuleChecksFromTask,
   submitV1ImageDetectSync,
   submitV3Detect,
+  submitV3DetectTask,
+  submitV3Upload,
   triggerTraining,
   updateFeedbackEntry,
   updateTrainingDatasetEntry,
@@ -74,9 +78,9 @@ const v3SpecifyBbox = ref(false)
 /** 单据时间（可选）：付款截图等场景供后端时间校验 */
 const documentTime = ref('')
 
-/** 可多选：勾选哪种就使用哪种，两项都勾选则并行 */
-const useModelDetection = ref(false)
-const useRuleDetection = ref(true)
+/** 可多选：默认只启用 AI 检测，规则检测按需勾选 */
+const useModelDetection = ref(true)
+const useRuleDetection = ref(false)
 
 const drawing = ref(false)
 const drawStart = ref<{ x: number; y: number } | null>(null)
@@ -99,6 +103,53 @@ type V3ViewPayload = {
   error_msg?: string | null
 }
 const v3Payload = ref<V3ViewPayload | null>(null)
+
+type BatchItemState =
+  | 'pending'
+  | 'submitting'
+  | 'uploaded'
+  | 'polling'
+  | 'retrying'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+
+type BatchItem = {
+  file: File
+  fileName: string
+  attempt: number
+  taskId: string | null
+  payload: V3ViewPayload | RuleChecksData | null
+  error: string | null
+  elapsedMs: number | null
+  state: BatchItemState
+  nextRetryAt: number
+}
+
+type BatchRunResult = {
+  taskId?: string | null
+  payload?: V3ViewPayload | RuleChecksData | null
+  elapsedMs?: number | null
+}
+
+type BatchRunSummary = {
+  total: number
+  success: number
+  failed: BatchItem[]
+  retryCount: number
+  lastTaskId: string | null
+  lastPayload: V3ViewPayload | RuleChecksData | null
+  lastElapsedMs: number | null
+  items: BatchItem[]
+}
+
+const BATCH_MAX_ATTEMPTS = 3
+const BATCH_RETRY_BACKOFF_MS = [2000, 5000, 10000] as const
+const BATCH_HISTORY_REFRESH_EVERY = 5
+const BATCH_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000
+const V3_TASK_POLL_MAX_DURATION_MS = 20 * 60 * 1000
+const MAX_BATCH_IMAGE_COUNT = 50
+const batchItems = ref<BatchItem[]>([])
 
 const ruleCheckPayload = ref<RuleChecksData | null>(null)
 const ruleCheckLoading = ref(false)
@@ -325,14 +376,30 @@ function revokeUploadPreviews() {
 
 function addFiles(next: File[]) {
   if (!next.length) return
+  const validNext = next.filter((f) => /^image\//.test(f.type))
+  if (!validNext.length) return
+  const remaining = MAX_BATCH_IMAGE_COUNT - files.value.length
+  if (remaining <= 0) {
+    errorMsg.value = `最多支持上传 ${MAX_BATCH_IMAGE_COUNT} 张图片，请先移除部分图片再继续。`
+    return
+  }
+  const accepted = validNext.slice(0, remaining)
+  if (!accepted.length) {
+    errorMsg.value = `最多支持上传 ${MAX_BATCH_IMAGE_COUNT} 张图片，请先移除部分图片再继续。`
+    return
+  }
+  const rejectedCount = validNext.length - accepted.length
   resetResults()
   userBbox.value = null
   imageNatural.value = { w: 0, h: 0 }
   const before = files.value.length
-  files.value = [...files.value, ...next]
-  filePreviews.value = [...filePreviews.value, ...next.map((f) => URL.createObjectURL(f))]
+  files.value = [...files.value, ...accepted]
+  filePreviews.value = [...filePreviews.value, ...accepted.map((f) => URL.createObjectURL(f))]
   // 默认切到刚新增的第一张，方便连续多次上传后立即预览新图
   selectedUploadIndex.value = before
+  if (rejectedCount > 0) {
+    errorMsg.value = `最多支持上传 ${MAX_BATCH_IMAGE_COUNT} 张图片，已忽略超出的 ${rejectedCount} 张。`
+  }
 }
 
 function removePickedFile(index: number) {
@@ -400,8 +467,265 @@ function resetResults() {
   currentTaskFeedbackStatus.value = null
 }
 
-async function waitMs(ms: number): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, ms))
+async function waitMs(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  await new Promise<void>((resolve, reject) => {
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(t)
+        reject(new DOMException('Aborted', 'AbortError'))
+      },
+      { once: true },
+    )
+  })
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
+async function withTimeoutSignal<T>(
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  timeoutMessage: string,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (parentSignal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const ac = new AbortController()
+  const onAbort = () => ac.abort()
+  const timer = window.setTimeout(() => ac.abort(), timeoutMs)
+  parentSignal.addEventListener('abort', onAbort, { once: true })
+  try {
+    return await run(ac.signal)
+  } catch (e) {
+    if (ac.signal.aborted && !parentSignal.aborted) {
+      throw new Error(timeoutMessage)
+    }
+    throw e
+  } finally {
+    window.clearTimeout(timer)
+    parentSignal.removeEventListener('abort', onAbort)
+  }
+}
+
+function retryDelayMs(attempt: number): number {
+  return BATCH_RETRY_BACKOFF_MS[Math.min(Math.max(attempt - 1, 0), BATCH_RETRY_BACKOFF_MS.length - 1)]!
+}
+
+function formatBatchProgress(
+  label: string,
+  total: number,
+  success: number,
+  failed: number,
+  retryCount: number,
+  current?: BatchItem,
+): string {
+  const done = success + failed
+  const base = `${label} ${done}/${total}：成功 ${success}，最终失败 ${failed}，重试 ${retryCount}`
+  if (!current) return base
+  return `${base}；当前 ${current.fileName}（第 ${current.attempt}/${BATCH_MAX_ATTEMPTS} 次）`
+}
+
+function formatBatchFailureSummary(failed: BatchItem[]): string | null {
+  if (!failed.length) return null
+  const head = `以下文件最终失败（${failed.length}）：`
+  const rows = failed
+    .slice(0, 8)
+    .map((item) => `${item.fileName}: ${item.error || '检测失败'}`)
+  return `${head}\n${rows.join('\n')}${failed.length > 8 ? '\n…' : ''}`
+}
+
+function markUnfinishedBatchItemsCanceled(items: BatchItem[]): void {
+  for (const item of items) {
+    if (item.state !== 'completed' && item.state !== 'failed') {
+      item.state = 'canceled'
+    }
+  }
+}
+
+async function maybeRefreshHistory(completedCount: number, force = false): Promise<void> {
+  if (!force && completedCount % BATCH_HISTORY_REFRESH_EVERY !== 0) return
+  try {
+    await refreshHistoryList()
+  } catch {
+    // 历史刷新失败不应中断批量检测主流程。
+  }
+}
+
+function createBatchItems(filesToRun: File[]): BatchItem[] {
+  return filesToRun.map((file) => ({
+    file,
+    fileName: file.name || '未命名图片',
+    attempt: 0,
+    taskId: null,
+    payload: null,
+    error: null,
+    elapsedMs: null,
+    state: 'pending',
+    nextRetryAt: 0,
+  }))
+}
+
+async function deleteBatchItemTasks(items: BatchItem[]): Promise<void> {
+  const taskIds = new Set<string>()
+  for (const item of items) {
+    const taskId = item.taskId?.trim()
+    if (taskId) taskIds.add(taskId)
+  }
+  await Promise.all([...taskIds].map((taskId) => deleteV3Task(taskId).catch(() => undefined)))
+}
+
+async function runStableBatchItems(
+  items: BatchItem[],
+  label: string,
+  signal: AbortSignal,
+  executeOne: (item: BatchItem, prefix: string) => Promise<BatchRunResult>,
+  opts?: {
+    refreshHistory?: boolean
+    deleteTaskOnRetry?: boolean
+  },
+): Promise<BatchRunSummary> {
+  batchItems.value = items
+  const total = items.length
+  const refreshHistory = opts?.refreshHistory ?? true
+  const deleteTaskOnRetry = opts?.deleteTaskOnRetry ?? true
+
+  const queue = items.map((_, index) => index)
+  let success = 0
+  let finalFailed = 0
+  let retryCount = 0
+  let lastTaskId: string | null = null
+  let lastPayload: V3ViewPayload | RuleChecksData | null = null
+  let lastElapsedMs: number | null = null
+
+  while (queue.length > 0) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    const index = queue.shift()!
+    const item = items[index]!
+    if (item.state === 'completed' || item.state === 'failed' || item.state === 'canceled') {
+      continue
+    }
+
+    const waitForRetry = item.nextRetryAt - Date.now()
+    if (waitForRetry > 0) {
+      pollStatus.value = `${label}：${item.fileName} 等待重试 ${Math.ceil(waitForRetry / 1000)} 秒`
+      await waitMs(waitForRetry, signal)
+    }
+
+    item.attempt += 1
+    item.state = 'submitting'
+    item.error = null
+    pollStatus.value = formatBatchProgress(label, total, success, finalFailed, retryCount, item)
+
+    try {
+      const prefix = `${label} ${success + finalFailed + 1}/${total}`
+      const startedAt = performance.now()
+      const result = await executeOne(item, prefix)
+      item.state = 'completed'
+      item.taskId = result.taskId ?? item.taskId
+      item.payload = result.payload ?? item.payload
+      item.elapsedMs = result.elapsedMs ?? Math.round(performance.now() - startedAt)
+      success += 1
+      lastTaskId = item.taskId || lastTaskId
+      lastPayload = item.payload ?? lastPayload
+      lastElapsedMs = item.elapsedMs
+      pollStatus.value = formatBatchProgress(label, total, success, finalFailed, retryCount)
+      if (refreshHistory) await maybeRefreshHistory(success + finalFailed)
+    } catch (e) {
+      if (isAbortError(e)) {
+        markUnfinishedBatchItemsCanceled(items)
+        throw e
+      }
+
+      item.error = errorText(e)
+      const canRetry = item.attempt < BATCH_MAX_ATTEMPTS && isRetryableDetectionError(e)
+      if (canRetry) {
+        if (deleteTaskOnRetry && item.taskId) {
+          void deleteV3Task(item.taskId).catch(() => undefined)
+        }
+        item.state = 'retrying'
+        retryCount += 1
+        const delay = retryDelayMs(item.attempt)
+        item.nextRetryAt = Date.now() + delay
+        pollStatus.value = `${label}：${item.fileName} 失败，将在 ${Math.ceil(delay / 1000)} 秒后第 ${item.attempt + 1} 次重试`
+        queue.push(index)
+        continue
+      }
+
+      item.state = 'failed'
+      finalFailed += 1
+      pollStatus.value = formatBatchProgress(label, total, success, finalFailed, retryCount)
+      if (refreshHistory) await maybeRefreshHistory(success + finalFailed)
+    }
+  }
+
+  if (refreshHistory) await maybeRefreshHistory(success + finalFailed, true)
+  return {
+    total,
+    success,
+    failed: items.filter((item) => item.state === 'failed'),
+    retryCount,
+    lastTaskId,
+    lastPayload,
+    lastElapsedMs,
+    items,
+  }
+}
+
+function resetUploadedItemsForDetection(items: BatchItem[]): void {
+  for (const item of items) {
+    if (item.state !== 'completed') continue
+    item.state = 'uploaded'
+    item.attempt = 0
+    item.error = null
+    item.nextRetryAt = 0
+    item.payload = null
+    item.elapsedMs = null
+  }
+}
+
+async function uploadBatchFiles(
+  filesToUpload: File[],
+  label: string,
+  signal: AbortSignal,
+): Promise<BatchRunSummary> {
+  pollStatus.value = `${label}：上传阶段 0/${filesToUpload.length}`
+  const summary = await runStableBatchItems(
+    createBatchItems(filesToUpload),
+    `${label}上传`,
+    signal,
+    async (item) => {
+      const t0 = performance.now()
+      const submit = await withTimeoutSignal(
+        signal,
+        BATCH_UPLOAD_TIMEOUT_MS,
+        `${item.fileName} 上传超时`,
+        (childSignal) => submitV3Upload(
+          item.file,
+          detectSubmitOpts(childSignal, false, formatImageCreatedAt(item.file)),
+        ),
+      )
+      item.taskId = submit.task_id
+      if (submit.batch && !currentBatch.value) currentBatch.value = submit.batch
+      return { taskId: submit.task_id, elapsedMs: Math.round(performance.now() - t0) }
+    },
+    { refreshHistory: false, deleteTaskOnRetry: true },
+  )
+
+  if (summary.failed.length > 0) {
+    await deleteBatchItemTasks(summary.items)
+    return summary
+  }
+
+  resetUploadedItemsForDetection(summary.items)
+  pollStatus.value = `${label}：上传完成 ${summary.success}/${summary.total}，开始检测`
+  return summary
 }
 
 function isDetectionMockMode(): boolean {
@@ -1005,6 +1329,48 @@ async function startRuleChecks(
   }
 }
 
+async function startRuleChecksFromTask(
+  taskId: string,
+  file: File,
+  bbox: BboxXYXY | null,
+  signal: AbortSignal,
+  imageCreatedAt?: string | null,
+): Promise<RuleChecksData> {
+  ruleCheckLoading.value = true
+  ruleCheckError.value = null
+  ruleCheckElapsed.value = null
+  aiElapsed.value = null
+  const t0 = performance.now()
+  try {
+    const data = await submitRuleChecksFromTask(taskId, bbox, {
+      ...detectSubmitOpts(signal, false, imageCreatedAt ?? formatImageCreatedAt(file)),
+    })
+    ruleCheckPayload.value = data
+    if (data.suggested_rois && data.suggested_rois.length > 0) {
+      suggestedRois.value = data.suggested_rois
+      const highPrio = data.suggested_rois
+        .map((roi, i) => (roi.priority <= 4 ? i : -1))
+        .filter((i) => i >= 0)
+      selectedRoiIndices.value = highPrio.length > 0
+        ? highPrio
+        : data.suggested_rois.map((_, i) => i)
+    } else {
+      suggestedRois.value = null
+      selectedRoiIndices.value = []
+    }
+    ruleCheckElapsed.value = Math.round(performance.now() - t0)
+    return data
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') throw e
+    const message = e instanceof Error ? e.message : String(e)
+    ruleCheckError.value = message || '规则检测失败'
+    ruleCheckElapsed.value = Math.round(performance.now() - t0)
+    throw e
+  } finally {
+    ruleCheckLoading.value = false
+  }
+}
+
 async function runRuleSingle(file: File) {
   const bbox: BboxXYXY | null = v3SpecifyBbox.value ? (userBbox.value ?? fullImageBbox()) : null
   if (v3SpecifyBbox.value && !bbox) {
@@ -1082,13 +1448,17 @@ async function runRoiDetect(file: File) {
 
 async function runRuleBatch(batchFiles: File[]) {
   if (!batchFiles.length) return
+  const filesToRun = batchFiles.slice(0, MAX_BATCH_IMAGE_COUNT)
+  const limitNotice = filesToRun.length !== batchFiles.length
+    ? `批量检测最多支持 ${MAX_BATCH_IMAGE_COUNT} 张图片，已忽略超出的 ${batchFiles.length - filesToRun.length} 张。`
+    : null
   if (v3SpecifyBbox.value) {
     errorMsg.value = '批量检测暂不支持”仅分析框选区域”，请关闭后重试。'
     return
   }
 
   busy.value = true
-  errorMsg.value = null
+  errorMsg.value = limitNotice
   currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
@@ -1100,26 +1470,36 @@ async function runRuleBatch(batchFiles: File[]) {
   detectAbort.value?.abort()
   const ac = new AbortController()
   detectAbort.value = ac
-  let success = 0
-  const failed: string[] = []
   try {
-    for (let i = 0; i < batchFiles.length; i++) {
-      const file = batchFiles[i]!
-      pollStatus.value = `规则检测 ${i + 1}/${batchFiles.length}：提交中…`
-      try {
-        await startRuleChecks(file, null, ac.signal)
-        success += 1
-        void refreshHistoryList()
-      } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') throw e
-        failed.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
-      }
+    const uploadSummary = await uploadBatchFiles(filesToRun, '规则检测', ac.signal)
+    if (uploadSummary.failed.length > 0) {
+      pollStatus.value = `规则检测停止：上传成功 ${uploadSummary.success}/${uploadSummary.total}，最终失败 ${uploadSummary.failed.length}，未开始检测`
+      errorMsg.value = formatBatchFailureSummary(uploadSummary.failed)
+      return
     }
-    pollStatus.value = `规则检测完成：成功 ${success}/${batchFiles.length}`
-    if (failed.length) {
-      errorMsg.value = `以下文件失败（${failed.length}）：\n${failed.slice(0, 5).join('\n')}${failed.length > 5 ? '\n…' : ''}`
-    }
-    void refreshHistoryList()
+
+    const summary = await runStableBatchItems(
+      uploadSummary.items,
+      '规则检测',
+      ac.signal,
+      async (item) => {
+        const taskId = item.taskId?.trim()
+        if (!taskId) throw new Error('上传阶段未返回任务 ID')
+        item.state = 'polling'
+        const t0 = performance.now()
+        const payload = await startRuleChecksFromTask(
+          taskId,
+          item.file,
+          null,
+          ac.signal,
+          formatImageCreatedAt(item.file),
+        )
+        return { taskId, payload, elapsedMs: Math.round(performance.now() - t0) }
+      },
+      { refreshHistory: true, deleteTaskOnRetry: false },
+    )
+    pollStatus.value = `规则检测完成：总数 ${summary.total}，成功 ${summary.success}，最终失败 ${summary.failed.length}，上传重试 ${uploadSummary.retryCount}，检测重试 ${summary.retryCount}`
+    errorMsg.value = formatBatchFailureSummary(summary.failed)
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') {
       pollStatus.value = '已取消'
@@ -1141,19 +1521,38 @@ async function runV3AsyncOne(
   signal: AbortSignal,
   withRuleChecks = false,
   imageCreatedAt?: string | null,
+  options?: {
+    taskId?: string | null
+    maxDurationMs?: number
+    onTaskId?: (taskId: string) => void
+  },
 ): Promise<{ taskId: string; payload: V3ViewPayload }> {
   pollStatus.value = withRuleChecks
     ? `${progressPrefix}：提交检测与辅助核查…`
     : `${progressPrefix}：提交任务…`
-  const submit = await submitV3Detect(file, bbox, detectSubmitOpts(signal, withRuleChecks, imageCreatedAt ?? formatImageCreatedAt(file)))
+  const existingTaskId = options?.taskId?.trim()
+  const submit = existingTaskId
+    ? await submitV3DetectTask(
+        existingTaskId,
+        bbox,
+        detectSubmitOpts(signal, withRuleChecks, imageCreatedAt ?? formatImageCreatedAt(file)),
+      )
+    : await submitV3Detect(
+        file,
+        bbox,
+        detectSubmitOpts(signal, withRuleChecks, imageCreatedAt ?? formatImageCreatedAt(file)),
+      )
   const taskId = submit.task_id?.trim()
   if (!taskId) throw new Error(`${progressPrefix}：未返回任务 ID`)
+  v3TaskId.value = taskId
+  options?.onTaskId?.(taskId)
   pollStatus.value = withRuleChecks
     ? `${progressPrefix}：检测与辅助核查处理中…`
     : `${progressPrefix}：检测处理中…`
   const data = await pollV3UntilComplete(taskId, {
     signal,
     intervalMs: 2000,
+    maxDurationMs: options?.maxDurationMs ?? V3_TASK_POLL_MAX_DURATION_MS,
     onPoll: (st) => {
       const label =
         st === 'PENDING' || st === 'PROCESSING'
@@ -2157,13 +2556,17 @@ async function runV3() {
 
 async function runV3Batch(files: File[]) {
   if (!files.length) return
+  const filesToRun = files.slice(0, MAX_BATCH_IMAGE_COUNT)
+  const limitNotice = filesToRun.length !== files.length
+    ? `批量检测最多支持 ${MAX_BATCH_IMAGE_COUNT} 张图片，已忽略超出的 ${files.length - filesToRun.length} 张。`
+    : null
   if (v3SpecifyBbox.value) {
     errorMsg.value = '批量检测暂不支持”仅分析框选区域”，请关闭后重试。'
     return
   }
   const runRule = useRuleDetection.value
   busy.value = true
-  errorMsg.value = null
+  errorMsg.value = limitNotice
   currentBatch.value = generateNextBatch()
   viewingHistoryId.value = null
   v3Payload.value = null
@@ -2181,41 +2584,60 @@ async function runV3Batch(files: File[]) {
   detectAbort.value?.abort()
   const ac = new AbortController()
   detectAbort.value = ac
-  let success = 0
-  const failed: string[] = []
-  let lastTaskId: string | null = null
-  let lastPayload: V3ViewPayload | null = null
   try {
     pollStatus.value = runRule
-      ? `预计等待约 ${files.length} 分钟（含辅助核查，按每张约 1 分钟估算）`
-      : `预计等待约 ${files.length} 分钟（按每张约 1 分钟估算）`
-    await waitMs(300)
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i]!
-      const prefix = `批量检测 ${i + 1}/${files.length}`
-      try {
+      ? `预计等待约 ${filesToRun.length} 分钟（含辅助核查，按每张约 1 分钟估算）`
+      : `预计等待约 ${filesToRun.length} 分钟（按每张约 1 分钟估算）`
+    await waitMs(300, ac.signal)
+    const uploadSummary = await uploadBatchFiles(filesToRun, '批量检测', ac.signal)
+    if (uploadSummary.failed.length > 0) {
+      pollStatus.value = `批量检测停止：上传成功 ${uploadSummary.success}/${uploadSummary.total}，最终失败 ${uploadSummary.failed.length}，未开始检测`
+      errorMsg.value = formatBatchFailureSummary(uploadSummary.failed)
+      if (runRule) ruleCheckLoading.value = false
+      return
+    }
+
+    const summary = await runStableBatchItems(
+      uploadSummary.items,
+      '批量检测',
+      ac.signal,
+      async (item, prefix) => {
+        const uploadedTaskId = item.taskId?.trim()
+        if (!uploadedTaskId) throw new Error(`${prefix}：上传阶段未返回任务 ID`)
         const t0 = performance.now()
-        const { taskId, payload } = await runV3AsyncOne(f, null, prefix, ac.signal, runRule)
+        item.state = 'polling'
+        const { taskId, payload } = await runV3AsyncOne(
+          item.file,
+          null,
+          prefix,
+          ac.signal,
+          runRule,
+          formatImageCreatedAt(item.file),
+          {
+            taskId: uploadedTaskId,
+            maxDurationMs: V3_TASK_POLL_MAX_DURATION_MS,
+            onTaskId: (taskId) => {
+              item.taskId = taskId
+              item.state = 'polling'
+            },
+          },
+        )
         const elapsed = Math.round(performance.now() - t0)
-        success += 1
-        lastTaskId = taskId
-        lastPayload = payload
         aiElapsed.value = elapsed
         if (runRule) ruleCheckElapsed.value = elapsed
-        void refreshHistoryList()
-      } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') throw e
-        failed.push(`${f.name}: ${e instanceof Error ? e.message : String(e)}`)
-      }
+        return { taskId, payload, elapsedMs: elapsed }
+      },
+      { refreshHistory: true, deleteTaskOnRetry: false },
+    )
+    v3TaskId.value = summary.lastTaskId
+    if (summary.lastPayload) v3Payload.value = summary.lastPayload as V3ViewPayload
+    if (summary.lastElapsedMs != null) {
+      aiElapsed.value = summary.lastElapsedMs
+      if (runRule) ruleCheckElapsed.value = summary.lastElapsedMs
     }
-    v3TaskId.value = lastTaskId
-    if (lastPayload) v3Payload.value = lastPayload
-    pollStatus.value = `批量完成：成功 ${success}/${files.length}`
-    if (failed.length) {
-      errorMsg.value = `以下文件失败（${failed.length}）：\n${failed.slice(0, 5).join('\n')}${failed.length > 5 ? '\n…' : ''}`
-    }
-    void refreshHistoryList()
-    if (lastTaskId) void loadViz(lastTaskId)
+    pollStatus.value = `批量完成：总数 ${summary.total}，成功 ${summary.success}，最终失败 ${summary.failed.length}，上传重试 ${uploadSummary.retryCount}，检测重试 ${summary.retryCount}`
+    errorMsg.value = formatBatchFailureSummary(summary.failed)
+    if (summary.lastTaskId) void loadViz(summary.lastTaskId)
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') {
       pollStatus.value = '已取消'
@@ -2268,12 +2690,19 @@ async function loadViz(taskId: string): Promise<boolean> {
 
 async function cancelTask() {
   detectAbort.value?.abort()
-  const taskId = v3TaskId.value?.trim()
-  if (!taskId) return
-  try {
-    await deleteV3Task(taskId)
-  } catch {
-    // ignore cancel races; local polling has already been aborted
+  const taskIds = new Set<string>()
+  const currentTaskId = v3TaskId.value?.trim()
+  if (currentTaskId) taskIds.add(currentTaskId)
+  for (const item of batchItems.value) {
+    const taskId = item.taskId?.trim()
+    if (taskId) taskIds.add(taskId)
+  }
+  for (const taskId of taskIds) {
+    try {
+      await deleteV3Task(taskId)
+    } catch {
+      // ignore cancel races; local polling has already been aborted
+    }
   }
 }
 
@@ -2331,7 +2760,7 @@ onUnmounted(() => {
       <aside class="sidebar">
         <section class="card side-section">
           <h2 class="section-title">检测方式</h2>
-          <p class="detect-type-hint">可多选；勾选哪种使用哪种，两项都选则 AI 完成后自动关联规则核查。</p>
+          <p class="detect-type-hint">可多选；默认勾选 AI 检测，规则检测为辅助选项，可按需勾选。</p>
           <div class="detect-type-list">
             <label class="detect-type-item">
               <input
@@ -2359,7 +2788,7 @@ onUnmounted(() => {
               <span class="detect-type-body">
                 <span class="detect-type-title">规则检测</span>
                 <span class="detect-type-desc"
-                  >核查拼接痕迹、时间一致性、像素重叠等规则项，速度较快</span
+                  >核查拼接痕迹、时间一致性、像素重叠等规则项，辅助 AI 检测选项，可不选取</span
                 >
               </span>
             </label>
@@ -2381,7 +2810,7 @@ onUnmounted(() => {
               上传图片
             </button>
             <span class="upload-picked-summary">
-              {{ files.length ? `已选择 ${files.length} 张图片` : '支持一次选择一张或多张，后续可继续添加' }}
+              {{ files.length ? `已选择 ${files.length}/${MAX_BATCH_IMAGE_COUNT} 张图片` : `最多支持 ${MAX_BATCH_IMAGE_COUNT} 张图片，支持一次选择一张或多张，后续可继续添加` }}
             </span>
           </div>
           <div v-if="files.length > 1" class="upload-picked-list" aria-label="已选图片列表">
